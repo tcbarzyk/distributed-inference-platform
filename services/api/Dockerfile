@@ -7,6 +7,8 @@ WORKDIR /app
 
 COPY services/api/requirements.txt services/api/requirements.txt
 COPY services/api/src services/api/src
+COPY services/api/alembic services/api/alembic
+COPY services/api/alembic.ini services/api/alembic.ini
 COPY libs/platform_shared libs/platform_shared
 
 RUN python - <<'PY'

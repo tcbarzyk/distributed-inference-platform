@@ -1,6 +1,17 @@
 {
+  "include": [
+    "libs",
+    "services"
+  ],
   "extraPaths": [
-    "services",
     "libs/platform_shared/src"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv",
+    "**/venv",
+    "**/alembic",
+    "**/sample-video"
   ]
 }
