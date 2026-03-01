@@ -12,22 +12,23 @@ Flow:
 5. Track and log run metrics.
 """
 
+from pathlib import Path
+import sys
+
+# Support both direct-script and module execution.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import redis
 import logging
 import time
 import json
-import sys
-from pathlib import Path
-from frame_discovery import discover_frames
+from services.producer.src.frame_discovery import discover_frames # type: ignore[reportMissingImports]
 import cv2
 from dataclasses import dataclass
 
-# Allow imports from repository root when this file is run directly.
-SERVICES_ROOT = Path(__file__).resolve().parents[2]
-if str(SERVICES_ROOT) not in sys.path:
-    sys.path.append(str(SERVICES_ROOT))
-
-from shared.config import load_service_config
+from services.shared.config import load_service_config # type: ignore[reportMissingImports]
 
 CONFIG = load_service_config(caller_file=__file__)
 
