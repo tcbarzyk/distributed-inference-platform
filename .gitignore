@@ -1,6 +1,10 @@
 .env
 .vscode/
 
+**/postgres-data/
+**/pgdata/
+services/postgres
+
 # Python artifacts
 __pycache__/
 *.py[cod]
