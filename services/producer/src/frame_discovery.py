@@ -1,0 +1,104 @@
+"""
+Frame discovery for sample-file mode.
+
+Behavior:
+- Scans every camera directory listed in `PRODUCER_CAMERA_DIRS`.
+- Parses capture timestamps from filenames.
+- Merges all cameras into one combined timeline.
+- Returns a single manifest (`list[FrameRecord]`) sorted by `capture_ts_us`.
+"""
+
+from pathlib import Path
+import logging
+import sys
+from dataclasses import dataclass
+
+# Allow imports from repository root when this file is run directly.
+SERVICES_ROOT = Path(__file__).resolve().parents[2]
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.append(str(SERVICES_ROOT))
+
+from shared.config import load_service_config
+
+CONFIG = load_service_config(caller_file=__file__)
+
+# Set up formatting
+logging.basicConfig(
+    level=CONFIG.log_level,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("Producer")
+
+@dataclass(frozen=True)
+class FrameRecord:
+    frame_id: int
+    source_id: str
+    capture_ts_us: int
+    path: Path
+
+
+def discover_frames() -> list[FrameRecord]:
+    if CONFIG.producer_source_mode == "livestream":
+        raise NotImplementedError("Livestream mode is not implemented yet.")
+    if CONFIG.producer_source_mode != "sample_files":
+        raise ValueError(f"Unsupported PRODUCER_SOURCE_MODE: {CONFIG.producer_source_mode}")
+
+    sample_root = Path(CONFIG.producer_sample_root)
+    frame_paths: list[Path] = []
+
+    for camera_dir in CONFIG.producer_camera_dirs:
+        camera_path = sample_root / camera_dir
+        matched_frames = list(camera_path.glob(CONFIG.producer_file_glob))
+        logger.info(f"Discovered {len(matched_frames)} candidate frames in {camera_path}")
+        frame_paths.extend(matched_frames)
+
+    if not frame_paths:
+        raise ValueError("No frames discovered across configured camera directories.")
+
+    # Keep only files with valid parseable capture timestamps, then sort by timestamp.
+    valid_with_ts: list[tuple[int, Path]] = []
+    invalid_count = 0
+    for frame in frame_paths:
+        try:
+            ts = parse_capture_timestamp(frame)
+            valid_with_ts.append((ts, frame))
+        except ValueError as exc:
+            invalid_count += 1
+            logger.warning(str(exc))
+
+    if not valid_with_ts:
+        raise ValueError("No valid frames found after timestamp parsing.")
+
+    valid_with_ts.sort(key=lambda item: item[0])
+    sorted_frames = [FrameRecord(frame_id=i, source_id=frame.parent.name, capture_ts_us=ts, path=frame)
+                     for i, (ts, frame) in enumerate(valid_with_ts)]
+
+    logger.info(
+        "Frame discovery complete: total_candidates=%d, valid=%d, invalid=%d",
+        len(frame_paths),
+        len(sorted_frames),
+        invalid_count,
+    )
+    return sorted_frames
+    
+
+def parse_capture_timestamp(frame_path: Path) -> int:
+    """
+    Extract capture timestamp from frame filename.
+
+    Assumes filename format: <prefix>_<timestamp>.<ext>
+    Example for this dataset:
+    KAB_SK_1_undist_1384779301359985.bmp
+    """
+    timestamp_str = frame_path.stem.split("_")[-1]
+    if not timestamp_str.isdigit():
+        raise ValueError(f"Failed to parse numeric timestamp from: {frame_path}")
+    return int(timestamp_str)
+
+if __name__ == "__main__":
+    try:
+        frames = discover_frames()
+        logger.info(f"Total frames discovered: {len(frames)}")
+    except Exception as exc:
+        logger.error(f"Configuration validation or frame discovery failed: {exc}")

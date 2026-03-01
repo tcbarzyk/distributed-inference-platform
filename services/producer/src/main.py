@@ -1,16 +1,395 @@
 """
-  - create a Redis client connection,
-  - write a key like demo:greeting with value hello world,
-  - read the same key back,
-  - print the value so you can verify round-trip.
+Redis producer service.
+
+Flow:
+1. Load and validate configuration.
+2. Connect to Redis.
+3. Choose source mode:
+   - `sample_files`: discover disk frames and replay them.
+   - `livestream`: read frames continuously from a live source.
+4. For each frame, encode image bytes, write them to Redis with TTL, and enqueue
+   a lightweight metadata job for workers.
+5. Track and log run metrics.
 """
 
 import redis
+import logging
+import time
+import json
+import sys
+from pathlib import Path
+from frame_discovery import discover_frames
+import cv2
+from dataclasses import dataclass
 
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
-r.set('demo:greeting', 'hello world')
+# Allow imports from repository root when this file is run directly.
+SERVICES_ROOT = Path(__file__).resolve().parents[2]
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.append(str(SERVICES_ROOT))
 
-greeting = r.get('demo:greeting')
-print(greeting)
+from shared.config import load_service_config
 
-r.close()
+CONFIG = load_service_config(caller_file=__file__)
+
+# Set up formatting
+logging.basicConfig(
+    level=CONFIG.log_level,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("Producer")
+
+logger.info(f"Producer will connect to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
+
+
+@dataclass
+class ProducerMetrics:
+    """Runtime counters used for progress and end-of-run summary logging."""
+
+    discovered_frames: int = 0
+    attempted_frames: int = 0
+    published_frames: int = 0
+    read_failures: int = 0
+    encode_failures: int = 0
+    redis_set_failures: int = 0
+    queue_push_failures: int = 0
+    dropped_frames: int = 0
+    total_sleep_seconds: float = 0.0
+    start_time_s: float = 0.0
+    end_time_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class PublishRecord:
+    """Minimal frame metadata required to publish one frame job."""
+
+    frame_id: int
+    source_id: str
+    capture_ts_us: int
+    path: str
+
+
+def _publish_frame(r: redis.Redis, record, image) -> tuple[bool, str | None]:
+    """
+    Encode and publish one frame.
+
+    Returns:
+    - (True, None) on success
+    - (False, reason) on failure, where reason is one of:
+      `encode_failed`, `redis_set_failed`, `queue_push_failed`
+    """
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        image,
+        [cv2.IMWRITE_JPEG_QUALITY, CONFIG.producer_jpeg_quality],
+    )
+    if not ok:
+        return False, "encode_failed"
+
+    frame_bytes = encoded.tobytes()
+    frame_key = f"{CONFIG.producer_frame_key_prefix}:{record.source_id}:{record.frame_id}"
+
+    try:
+        r.set(
+            name=frame_key,
+            value=frame_bytes,
+            ex=CONFIG.producer_frame_ttl_seconds,
+        )
+    except redis.RedisError as exc:
+        logger.warning("Redis SET failed for %s: %s", frame_key, exc)
+        return False, "redis_set_failed"
+
+    job_data = {
+        "frame_id": record.frame_id,
+        "source_id": record.source_id,
+        "capture_ts_us": record.capture_ts_us,
+        "frame_key": frame_key,
+        "enqueued_at_us": int(time.time() * 1_000_000),
+    }
+
+    try:
+        r.lpush(CONFIG.queue_name, json.dumps(job_data))
+    except redis.RedisError as exc:
+        logger.warning("Queue LPUSH failed for %s: %s", frame_key, exc)
+        return False, "queue_push_failed"
+
+    return True, None
+
+
+def _sleep_for_replay_mode(frames, index: int, metrics: ProducerMetrics) -> None:
+    """Apply pacing between frames based on replay mode."""
+    if CONFIG.producer_replay_mode == "fixed":
+        sleep_time = 1 / CONFIG.producer_fixed_fps
+        time.sleep(sleep_time)
+        metrics.total_sleep_seconds += sleep_time
+        return
+
+    if CONFIG.producer_replay_mode == "realtime":
+        # Sleep by source capture-time delta between this frame and the next.
+        if index >= len(frames) - 1:
+            return
+
+        current_ts_us = frames[index].capture_ts_us
+        next_ts_us = frames[index + 1].capture_ts_us
+        delta_us = next_ts_us - current_ts_us
+        if delta_us <= 0:
+            logger.warning(
+                "Non-positive timestamp delta at frame_id=%s (delta_us=%s); skipping sleep.",
+                frames[index].frame_id,
+                delta_us,
+            )
+            return
+
+        sleep_time = delta_us / 1_000_000
+        time.sleep(sleep_time)
+        metrics.total_sleep_seconds += sleep_time
+        return
+
+    # max mode: do not sleep
+
+
+def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
+    """Log a single summary line with key producer counters and rates."""
+    elapsed = max(0.0, metrics.end_time_s - metrics.start_time_s)
+    effective_fps = (metrics.published_frames / elapsed) if elapsed > 0 else 0.0
+    logger.info(
+        (
+            "Producer summary | mode=%s discovered=%d attempted=%d published=%d "
+            "dropped=%d read_failures=%d encode_failures=%d redis_set_failures=%d "
+            "queue_push_failures=%d total_sleep_s=%.3f elapsed_s=%.3f effective_fps=%.2f"
+        ),
+        mode_label,
+        metrics.discovered_frames,
+        metrics.attempted_frames,
+        metrics.published_frames,
+        metrics.dropped_frames,
+        metrics.read_failures,
+        metrics.encode_failures,
+        metrics.redis_set_failures,
+        metrics.queue_push_failures,
+        metrics.total_sleep_seconds,
+        elapsed,
+        effective_fps,
+    )
+
+
+def _run_sample_file_mode(r: redis.Redis) -> None:
+    """
+    Replay discovered sample-file frames through Redis.
+
+    Steps per frame:
+    - read image from disk
+    - publish frame bytes + metadata
+    - apply replay sleep policy
+    """
+    metrics = ProducerMetrics(start_time_s=time.time())
+    frames = discover_frames()
+    metrics.discovered_frames = len(frames)
+    logger.info("Total frames discovered: %d", metrics.discovered_frames)
+
+    for idx, record in enumerate(frames):
+        metrics.attempted_frames += 1
+        image = cv2.imread(str(record.path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            metrics.read_failures += 1
+            metrics.dropped_frames += 1
+            logger.warning("Failed to read image at %s, skipping.", record.path)
+            continue
+
+        published, reason = _publish_frame(r, record, image)
+        if not published:
+            metrics.dropped_frames += 1
+            if reason == "encode_failed":
+                metrics.encode_failures += 1
+            elif reason == "redis_set_failed":
+                metrics.redis_set_failures += 1
+            elif reason == "queue_push_failed":
+                metrics.queue_push_failures += 1
+            continue
+
+        metrics.published_frames += 1
+
+        if metrics.published_frames % 200 == 0:
+            logger.info(
+                "Progress: published=%d/%d",
+                metrics.published_frames,
+                metrics.discovered_frames,
+            )
+
+        _sleep_for_replay_mode(frames, idx, metrics)
+
+    metrics.end_time_s = time.time()
+    _log_summary(metrics, "sample_files")
+
+
+def _run_livestream_mode(r: redis.Redis) -> None:
+    """
+    Produce jobs from a live video source (RTSP/RTMP/webcam URL/device path).
+
+    End-to-end flow per frame:
+    1) Read frame from OpenCV capture.
+    2) Build a capture timestamp in microseconds.
+    3) Encode frame and write bytes to Redis with TTL.
+    4) Push a lightweight metadata job to the Redis queue.
+    5) Repeat until stream read fails or user interrupts.
+    """
+    metrics = ProducerMetrics(start_time_s=time.time())
+    source_id = CONFIG.producer_stream_source_id or "stream-1"
+    logger.info("Starting livestream producer for source_id=%s", source_id)
+
+    # OpenCV handles opening camera devices and network stream URLs.
+    # Examples:
+    # - 0 (webcam index)
+    # - "rtsp://user:pass@camera-ip/stream"
+    # - "rtmp://..."
+    cap = cv2.VideoCapture(CONFIG.producer_stream_url)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open livestream source: {CONFIG.producer_stream_url}")
+
+    frame_id = 0
+    try:
+        while True:
+            # Pull the next frame from the stream.
+            # ok=False or image=None usually means source interruption/end/failure.
+            ok, image = cap.read()
+            if not ok or image is None:
+                logger.warning("Livestream frame read failed; stopping stream loop.")
+                break
+
+            metrics.attempted_frames += 1
+            metrics.discovered_frames += 1
+
+            # For live input, capture time is "now" at ingest.
+            # Stored in microseconds to align with sample-file timestamp units.
+            capture_ts_us = int(time.time() * 1_000_000)
+            record = PublishRecord(
+                frame_id=frame_id,
+                source_id=source_id,
+                capture_ts_us=capture_ts_us,
+                path="<livestream>",
+            )
+
+            # Reuse the same publish routine as sample mode:
+            # - JPEG encode
+            # - Redis SET with TTL for frame bytes
+            # - Queue LPUSH with metadata payload
+            published, reason = _publish_frame(r, record, image)
+            if not published:
+                metrics.dropped_frames += 1
+                if reason == "encode_failed":
+                    metrics.encode_failures += 1
+                elif reason == "redis_set_failed":
+                    metrics.redis_set_failures += 1
+                elif reason == "queue_push_failed":
+                    metrics.queue_push_failures += 1
+            else:
+                metrics.published_frames += 1
+
+            frame_id += 1
+
+            # Replay mode behavior for live streams:
+            # - fixed: throttle intentionally to configured FPS.
+            # - realtime: do not sleep; the stream cadence is already real-time.
+            # - max: do not sleep.
+            if CONFIG.producer_replay_mode == "fixed":
+                sleep_time = 1 / CONFIG.producer_fixed_fps
+                time.sleep(sleep_time)
+                metrics.total_sleep_seconds += sleep_time
+            elif CONFIG.producer_replay_mode == "realtime":
+                # For live input, frames already arrive in real time, so no additional sleep.
+                pass
+            # max mode: no sleep
+    except KeyboardInterrupt:
+        logger.info("Livestream shutdown signal received.")
+    finally:
+        # Always release capture handles and log a final run summary.
+        cap.release()
+        metrics.end_time_s = time.time()
+        _log_summary(metrics, "livestream")
+
+
+def validate_producer_config() -> None:
+    """
+    Perform producer-side runtime validation.
+
+    Shared config already validates env types/ranges. This function validates
+    the filesystem assumptions needed for file-based replay.
+    """
+    if CONFIG.producer_source_mode == "livestream":
+        logger.info("Config validation passed for livestream mode.")
+        return
+
+    if CONFIG.producer_source_mode != "sample_files":
+        raise ValueError(f"Unsupported PRODUCER_SOURCE_MODE: {CONFIG.producer_source_mode}")
+
+    if not CONFIG.producer_sample_root:
+        raise ValueError("PRODUCER_SAMPLE_ROOT is required for sample_files mode.")
+
+    sample_root = Path(CONFIG.producer_sample_root)
+    if not sample_root.exists():
+        raise ValueError(f"Sample root does not exist: {sample_root}")
+    if not sample_root.is_dir():
+        raise ValueError(f"Sample root is not a directory: {sample_root}")
+
+    if not CONFIG.producer_camera_dirs:
+        raise ValueError("PRODUCER_CAMERA_DIRS must include at least one directory.")
+
+    matched_total = 0
+    for camera_dir in CONFIG.producer_camera_dirs:
+        camera_path = sample_root / camera_dir
+        if not camera_path.exists():
+            raise ValueError(f"Camera directory does not exist: {camera_path}")
+        if not camera_path.is_dir():
+            raise ValueError(f"Camera path is not a directory: {camera_path}")
+
+        match_count = len(list(camera_path.glob(CONFIG.producer_file_glob)))
+        if match_count == 0:
+            raise ValueError(
+                f"No files matched glob '{CONFIG.producer_file_glob}' in {camera_path}"
+            )
+        matched_total += match_count
+
+    logger.info(
+        "Config validation passed for sample_files mode: root=%s, cameras=%s, matched_files=%d",
+        sample_root,
+        ",".join(CONFIG.producer_camera_dirs),
+        matched_total,
+    )
+
+
+def run_producer():
+    """
+    Entry point for producer execution.
+
+    Mode dispatch:
+    - sample_files: reads indexed files from disk and replays them.
+    - livestream: reads frames continuously from a live source.
+    """
+    validate_producer_config()
+
+    with redis.Redis(
+        host=CONFIG.redis_host,
+        port=CONFIG.redis_port,
+        db=CONFIG.redis_db,
+        password=CONFIG.redis_password,
+    ) as r:
+        try:
+            r.ping()
+            logger.info(f"Connected to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
+            if CONFIG.producer_source_mode == "sample_files":
+                _run_sample_file_mode(r)
+            elif CONFIG.producer_source_mode == "livestream":
+                _run_livestream_mode(r)
+            else:
+                raise ValueError(f"Unsupported PRODUCER_SOURCE_MODE: {CONFIG.producer_source_mode}")
+
+        except redis.ConnectionError:
+            logger.error("Could not connect to Redis. Is the Docker container running?")
+        except KeyboardInterrupt:
+            logger.info("Shutdown signal received.")
+    
+    # Once we exit the 'with' block, the connection is already closed.
+    logger.info("Producer connection closed safely.")
+
+if __name__ == "__main__":
+    run_producer()
