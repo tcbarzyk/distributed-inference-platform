@@ -17,8 +17,11 @@ from dataclasses import dataclass
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+SHARED_SRC = REPO_ROOT / "libs" / "platform_shared" / "src"
+if str(SHARED_SRC) not in sys.path:
+    sys.path.insert(0, str(SHARED_SRC))
 
-from services.shared.config import load_service_config
+from platform_shared.config import load_service_config
 
 CONFIG = load_service_config(caller_file=__file__)
 

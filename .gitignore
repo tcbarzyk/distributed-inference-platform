@@ -1,2 +1,19 @@
 .env
 .vscode/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.venv/
+venv/
+env/
+ENV/

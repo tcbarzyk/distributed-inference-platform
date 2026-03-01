@@ -1,0 +1,6 @@
+{
+  "extraPaths": [
+    "services",
+    "libs/platform_shared/src"
+  ]
+}
