@@ -1,0 +1,28 @@
+# Version control
+.git
+.gitignore
+
+# Virtual environments
+**/.venv
+**/venv
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+
+# Build artefacts & local output
+services/worker/output
+services/worker/.cache
+services/producer/sample-video
+
+# Misc
+*.md
+.env
+pyrightconfig.json
+docker-compose.yml
