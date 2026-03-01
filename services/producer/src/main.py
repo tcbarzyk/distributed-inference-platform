@@ -26,11 +26,11 @@ if str(SHARED_SRC) not in sys.path:
 import redis
 import logging
 import time
-import json
 from frame_discovery import discover_frames
 import cv2
 from dataclasses import dataclass
 
+from platform_shared.schemas import QueueJob
 from platform_shared.config import load_service_config
 
 CONFIG = load_service_config(caller_file=__file__)
@@ -44,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger("Producer")
 
 logger.info(f"Producer will connect to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
+SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -74,7 +75,12 @@ class PublishRecord:
     path: str
 
 
-def _publish_frame(r: redis.Redis, record, image) -> tuple[bool, str | None]:
+def _build_job_id(record: PublishRecord) -> str:
+    # Deterministic id keeps de-duplication simple in downstream systems.
+    return f"{record.source_id}:{record.frame_id}:{record.capture_ts_us}"
+
+
+def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, str | None]:
     """
     Encode and publish one frame.
 
@@ -104,16 +110,18 @@ def _publish_frame(r: redis.Redis, record, image) -> tuple[bool, str | None]:
         logger.warning("Redis SET failed for %s: %s", frame_key, exc)
         return False, "redis_set_failed"
 
-    job_data = {
-        "frame_id": record.frame_id,
-        "source_id": record.source_id,
-        "capture_ts_us": record.capture_ts_us,
-        "frame_key": frame_key,
-        "enqueued_at_us": int(time.time() * 1_000_000),
-    }
+    job_data = QueueJob(
+        schema_version=SCHEMA_VERSION,
+        job_id=_build_job_id(record),
+        frame_id=record.frame_id,
+        source_id=record.source_id,
+        capture_ts_us=record.capture_ts_us,
+        frame_key=frame_key,
+        enqueued_at_us=int(time.time() * 1_000_000),
+    )
 
     try:
-        r.lpush(CONFIG.queue_name, json.dumps(job_data))
+        r.lpush(CONFIG.queue_name, job_data.to_json_bytes())
     except redis.RedisError as exc:
         logger.warning("Queue LPUSH failed for %s: %s", frame_key, exc)
         return False, "queue_push_failed"

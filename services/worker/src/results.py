@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from platform_shared.config import ServiceConfig
+from platform_shared.schemas import InferenceResult
 
 
 def _ensure_dirs(config: ServiceConfig) -> tuple[Path, Path]:
@@ -48,10 +49,8 @@ def _draw_detections(image: np.ndarray, detections: list[dict[str, Any]]) -> np.
 def publish_result(
     *,
     config: ServiceConfig,
-    inference_result: dict[str, Any],
+    inference_result: InferenceResult,
     image: np.ndarray,
-    frame_id: int | None,
-    source_id: str | None,
 ) -> dict[str, Any]:
     """
     Publish worker output.
@@ -65,21 +64,14 @@ def publish_result(
     results_dir, annotated_dir = _ensure_dirs(config)
     results_file = _results_file_path(results_dir)
 
-    record = {
-        "processed_at_us": int(datetime.now().timestamp() * 1_000_000),
-        "frame_id": frame_id,
-        "source_id": source_id,
-        "status": inference_result.get("status"),
-        "model": inference_result.get("model"),
-        "inference_ms": inference_result.get("inference_ms"),
-        "pipeline_ms": inference_result.get("pipeline_ms"),
-        "detections": inference_result.get("detections", []),
-    }
+    record = inference_result.to_dict()
 
     with results_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
 
     annotated_path = None
+    frame_id = inference_result.frame_id
+    source_id = inference_result.source_id
     should_save_annotated = (
         config.worker_save_annotated
         and frame_id is not None
@@ -96,4 +88,3 @@ def publish_result(
         "annotated_path": str(annotated_path) if annotated_path else None,
         "detections_count": len(record["detections"]),
     }
-
