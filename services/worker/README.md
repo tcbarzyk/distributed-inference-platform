@@ -1,0 +1,1 @@
+This is the worker that gets and analyzes frames from Redis
