@@ -1,3 +1,7 @@
+output/
+logs/
+yolov8n.pt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

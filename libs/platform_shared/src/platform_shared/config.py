@@ -29,6 +29,12 @@ class ServiceConfig:
     producer_frame_key_prefix: str
     producer_stream_url: str | None
     producer_stream_source_id: str | None
+    producer_summary_log_interval_seconds: int
+    worker_summary_log_interval_seconds: int
+    worker_results_mode: str
+    worker_results_dir: str
+    worker_save_annotated: bool
+    worker_annotated_every_n: int
 
 
 def _repo_root_from(caller_file: str) -> Path:
@@ -64,6 +70,17 @@ def _to_choice(name: str, value: str | None, default: str, choices: set[str]) ->
         allowed = ", ".join(sorted(choices))
         raise ValueError(f"Environment variable {name} must be one of: {allowed}")
     return candidate
+
+
+def _to_bool(value: str | None, default: bool) -> bool:
+    if value is None or value.strip() == "":
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def load_service_config(*, caller_file: str) -> ServiceConfig:
@@ -120,6 +137,33 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
     producer_frame_key_prefix = (os.getenv("PRODUCER_FRAME_KEY_PREFIX") or "frame").strip()
     producer_stream_url = os.getenv("PRODUCER_STREAM_URL") or None
     producer_stream_source_id = os.getenv("PRODUCER_STREAM_SOURCE_ID") or None
+    producer_summary_log_interval_seconds = _to_int(
+        "PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS",
+        os.getenv("PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS"),
+        30,
+    )
+    worker_summary_log_interval_seconds = _to_int(
+        "WORKER_SUMMARY_LOG_INTERVAL_SECONDS",
+        os.getenv("WORKER_SUMMARY_LOG_INTERVAL_SECONDS"),
+        30,
+    )
+    worker_results_mode = _to_choice(
+        "WORKER_RESULTS_MODE",
+        os.getenv("WORKER_RESULTS_MODE"),
+        "local_jsonl",
+        {"local_jsonl"},
+    )
+    worker_results_dir_raw = (os.getenv("WORKER_RESULTS_DIR") or "services/worker/output").strip()
+    worker_results_dir_path = Path(worker_results_dir_raw)
+    if not worker_results_dir_path.is_absolute():
+        worker_results_dir_path = repo_root / worker_results_dir_path
+    worker_results_dir = str(worker_results_dir_path.resolve())
+    worker_save_annotated = _to_bool(os.getenv("WORKER_SAVE_ANNOTATED"), False)
+    worker_annotated_every_n = _to_int(
+        "WORKER_ANNOTATED_EVERY_N",
+        os.getenv("WORKER_ANNOTATED_EVERY_N"),
+        30,
+    )
 
     if producer_source_mode == "sample_files" and not producer_sample_root:
         default_sample_root = repo_root / "services/producer/sample-video/20140618_Sequence1a/Sequence1a"
@@ -137,6 +181,12 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("PRODUCER_JPEG_QUALITY must be between 1 and 100")
     if producer_frame_ttl_seconds <= 0:
         raise ValueError("PRODUCER_FRAME_TTL_SECONDS must be greater than 0")
+    if producer_summary_log_interval_seconds <= 0:
+        raise ValueError("PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS must be greater than 0")
+    if worker_summary_log_interval_seconds <= 0:
+        raise ValueError("WORKER_SUMMARY_LOG_INTERVAL_SECONDS must be greater than 0")
+    if worker_annotated_every_n <= 0:
+        raise ValueError("WORKER_ANNOTATED_EVERY_N must be greater than 0")
     if producer_frame_key_prefix == "":
         raise ValueError("PRODUCER_FRAME_KEY_PREFIX cannot be empty")
     if producer_file_glob == "":
@@ -161,4 +211,10 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         producer_frame_key_prefix=producer_frame_key_prefix,
         producer_stream_url=producer_stream_url,
         producer_stream_source_id=producer_stream_source_id,
+        producer_summary_log_interval_seconds=producer_summary_log_interval_seconds,
+        worker_summary_log_interval_seconds=worker_summary_log_interval_seconds,
+        worker_results_mode=worker_results_mode,
+        worker_results_dir=worker_results_dir,
+        worker_save_annotated=worker_save_annotated,
+        worker_annotated_every_n=worker_annotated_every_n,
     )

@@ -1,0 +1,99 @@
+"""Result publishing helpers for worker outputs."""
+
+from __future__ import annotations
+
+from datetime import datetime
+import json
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+
+from platform_shared.config import ServiceConfig
+
+
+def _ensure_dirs(config: ServiceConfig) -> tuple[Path, Path]:
+    results_dir = Path(config.worker_results_dir)
+    annotated_dir = results_dir / "annotated"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    annotated_dir.mkdir(parents=True, exist_ok=True)
+    return results_dir, annotated_dir
+
+
+def _results_file_path(results_dir: Path) -> Path:
+    # One results file per day keeps local output manageable.
+    day = datetime.now().strftime("%Y%m%d")
+    return results_dir / f"results-{day}.jsonl"
+
+
+def _draw_detections(image: np.ndarray, detections: list[dict[str, Any]]) -> np.ndarray:
+    canvas = image.copy()
+    if len(canvas.shape) == 2:
+        canvas = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+
+    for det in detections:
+        bbox = det.get("bbox_xyxy") or []
+        if len(bbox) != 4:
+            continue
+        x1, y1, x2, y2 = [int(float(v)) for v in bbox]
+        label = str(det.get("label", "obj"))
+        conf = float(det.get("confidence", 0.0))
+        text = f"{label} {conf:.2f}"
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 200, 0), 2)
+        cv2.putText(canvas, text, (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+    return canvas
+
+
+def publish_result(
+    *,
+    config: ServiceConfig,
+    inference_result: dict[str, Any],
+    image: np.ndarray,
+    frame_id: int | None,
+    source_id: str | None,
+) -> dict[str, Any]:
+    """
+    Publish worker output.
+
+    Current supported mode:
+    - local_jsonl: append one JSON object per line and optionally save annotated image.
+    """
+    if config.worker_results_mode != "local_jsonl":
+        raise ValueError(f"Unsupported WORKER_RESULTS_MODE: {config.worker_results_mode}")
+
+    results_dir, annotated_dir = _ensure_dirs(config)
+    results_file = _results_file_path(results_dir)
+
+    record = {
+        "processed_at_us": int(datetime.now().timestamp() * 1_000_000),
+        "frame_id": frame_id,
+        "source_id": source_id,
+        "status": inference_result.get("status"),
+        "model": inference_result.get("model"),
+        "inference_ms": inference_result.get("inference_ms"),
+        "pipeline_ms": inference_result.get("pipeline_ms"),
+        "detections": inference_result.get("detections", []),
+    }
+
+    with results_file.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+    annotated_path = None
+    should_save_annotated = (
+        config.worker_save_annotated
+        and frame_id is not None
+        and (frame_id % config.worker_annotated_every_n == 0)
+    )
+    if should_save_annotated:
+        rendered = _draw_detections(image, record["detections"])
+        safe_source = (source_id or "source").replace("/", "_")
+        annotated_path = annotated_dir / f"{safe_source}-frame-{frame_id}.jpg"
+        cv2.imwrite(str(annotated_path), rendered)
+
+    return {
+        "results_file": str(results_file),
+        "annotated_path": str(annotated_path) if annotated_path else None,
+        "detections_count": len(record["detections"]),
+    }
+

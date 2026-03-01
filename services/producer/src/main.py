@@ -61,6 +61,7 @@ class ProducerMetrics:
     total_sleep_seconds: float = 0.0
     start_time_s: float = 0.0
     end_time_s: float = 0.0
+    last_summary_log_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -120,10 +121,22 @@ def _publish_frame(r: redis.Redis, record, image) -> tuple[bool, str | None]:
     return True, None
 
 
-def _sleep_for_replay_mode(frames, index: int, metrics: ProducerMetrics) -> None:
+def _sleep_for_replay_mode(
+    frames,
+    index: int,
+    metrics: ProducerMetrics,
+    *,
+    loop_started_s: float | None = None,
+) -> None:
     """Apply pacing between frames based on replay mode."""
     if CONFIG.producer_replay_mode == "fixed":
-        sleep_time = 1 / CONFIG.producer_fixed_fps
+        target_period_s = 1 / CONFIG.producer_fixed_fps
+        # Sleep only for remaining budget after processing this frame.
+        if loop_started_s is None:
+            sleep_time = target_period_s
+        else:
+            elapsed_s = time.perf_counter() - loop_started_s
+            sleep_time = max(0.0, target_period_s - elapsed_s)
         time.sleep(sleep_time)
         metrics.total_sleep_seconds += sleep_time
         return
@@ -152,27 +165,54 @@ def _sleep_for_replay_mode(frames, index: int, metrics: ProducerMetrics) -> None
     # max mode: do not sleep
 
 
+def _producer_redis_errors(metrics: ProducerMetrics) -> int:
+    return metrics.redis_set_failures + metrics.queue_push_failures
+
+
+def _maybe_log_interval_summary(metrics: ProducerMetrics, mode_label: str, *, force: bool = False) -> None:
+    now = time.time()
+    if not force and (now - metrics.last_summary_log_s) < CONFIG.producer_summary_log_interval_seconds:
+        return
+
+    elapsed = max(0.0, now - metrics.start_time_s)
+    throughput = (metrics.published_frames / elapsed) if elapsed > 0 else 0.0
+    logger.info(
+        (
+            "Summary interval | service=producer mode=%s elapsed_s=%.1f discovered=%d attempted=%d "
+            "processed=%d dropped=%d redis_errors=%d throughput_fps=%.2f"
+        ),
+        mode_label,
+        elapsed,
+        metrics.discovered_frames,
+        metrics.attempted_frames,
+        metrics.published_frames,
+        metrics.dropped_frames,
+        _producer_redis_errors(metrics),
+        throughput,
+    )
+    metrics.last_summary_log_s = now
+
+
 def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
-    """Log a single summary line with key producer counters and rates."""
+    """Log final producer summary line."""
     elapsed = max(0.0, metrics.end_time_s - metrics.start_time_s)
     effective_fps = (metrics.published_frames / elapsed) if elapsed > 0 else 0.0
     logger.info(
         (
-            "Producer summary | mode=%s discovered=%d attempted=%d published=%d "
-            "dropped=%d read_failures=%d encode_failures=%d redis_set_failures=%d "
-            "queue_push_failures=%d total_sleep_s=%.3f elapsed_s=%.3f effective_fps=%.2f"
+            "Summary final | service=producer mode=%s elapsed_s=%.3f discovered=%d attempted=%d "
+            "processed=%d dropped=%d read_failures=%d encode_failures=%d redis_errors=%d "
+            "total_sleep_s=%.3f throughput_fps=%.2f"
         ),
         mode_label,
+        elapsed,
         metrics.discovered_frames,
         metrics.attempted_frames,
         metrics.published_frames,
         metrics.dropped_frames,
         metrics.read_failures,
         metrics.encode_failures,
-        metrics.redis_set_failures,
-        metrics.queue_push_failures,
+        _producer_redis_errors(metrics),
         metrics.total_sleep_seconds,
-        elapsed,
         effective_fps,
     )
 
@@ -187,11 +227,14 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
     - apply replay sleep policy
     """
     metrics = ProducerMetrics(start_time_s=time.time())
+    metrics.last_summary_log_s = metrics.start_time_s
     frames = discover_frames()
     metrics.discovered_frames = len(frames)
     logger.info("Total frames discovered: %d", metrics.discovered_frames)
 
     for idx, record in enumerate(frames):
+        loop_started_s = time.perf_counter()
+        _maybe_log_interval_summary(metrics, "sample_files")
         metrics.attempted_frames += 1
         image = cv2.imread(str(record.path), cv2.IMREAD_GRAYSCALE)
         if image is None:
@@ -212,17 +255,11 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
             continue
 
         metrics.published_frames += 1
-
-        if metrics.published_frames % 200 == 0:
-            logger.info(
-                "Progress: published=%d/%d",
-                metrics.published_frames,
-                metrics.discovered_frames,
-            )
-
-        _sleep_for_replay_mode(frames, idx, metrics)
+        _sleep_for_replay_mode(frames, idx, metrics, loop_started_s=loop_started_s)
+        _maybe_log_interval_summary(metrics, "sample_files")
 
     metrics.end_time_s = time.time()
+    _maybe_log_interval_summary(metrics, "sample_files", force=True)
     _log_summary(metrics, "sample_files")
 
 
@@ -238,6 +275,7 @@ def _run_livestream_mode(r: redis.Redis) -> None:
     5) Repeat until stream read fails or user interrupts.
     """
     metrics = ProducerMetrics(start_time_s=time.time())
+    metrics.last_summary_log_s = metrics.start_time_s
     source_id = CONFIG.producer_stream_source_id or "stream-1"
     logger.info("Starting livestream producer for source_id=%s", source_id)
 
@@ -253,6 +291,8 @@ def _run_livestream_mode(r: redis.Redis) -> None:
     frame_id = 0
     try:
         while True:
+            loop_started_s = time.perf_counter()
+            _maybe_log_interval_summary(metrics, "livestream")
             # Pull the next frame from the stream.
             # ok=False or image=None usually means source interruption/end/failure.
             ok, image = cap.read()
@@ -296,19 +336,23 @@ def _run_livestream_mode(r: redis.Redis) -> None:
             # - realtime: do not sleep; the stream cadence is already real-time.
             # - max: do not sleep.
             if CONFIG.producer_replay_mode == "fixed":
-                sleep_time = 1 / CONFIG.producer_fixed_fps
+                target_period_s = 1 / CONFIG.producer_fixed_fps
+                elapsed_s = time.perf_counter() - loop_started_s
+                sleep_time = max(0.0, target_period_s - elapsed_s)
                 time.sleep(sleep_time)
                 metrics.total_sleep_seconds += sleep_time
             elif CONFIG.producer_replay_mode == "realtime":
                 # For live input, frames already arrive in real time, so no additional sleep.
                 pass
             # max mode: no sleep
+            _maybe_log_interval_summary(metrics, "livestream")
     except KeyboardInterrupt:
         logger.info("Livestream shutdown signal received.")
     finally:
         # Always release capture handles and log a final run summary.
         cap.release()
         metrics.end_time_s = time.time()
+        _maybe_log_interval_summary(metrics, "livestream", force=True)
         _log_summary(metrics, "livestream")
 
 
