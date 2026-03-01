@@ -1,6 +1,14 @@
 output/
 logs/
-yolov8n.pt
+# Ignore ML model weights
+*.pt
+*.onnx
+*.weights
+*.h5
+
+# Ignore large data files
+*.mp4
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
