@@ -32,3 +32,4 @@ services:
       - ./services/worker/output:/app/services/worker/output
       - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics
     restart: unless-stopped
+    gpus: all

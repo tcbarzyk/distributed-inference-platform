@@ -18,7 +18,7 @@ SHARED_SRC = REPO_ROOT / "libs" / "platform_shared" / "src"
 if str(SHARED_SRC) not in sys.path:
     sys.path.insert(0, str(SHARED_SRC))
 
-from inference import InferenceInput, load_model, run_inference
+from inference import InferenceInput, get_model_device, load_model, run_inference
 from platform_shared.config import load_service_config
 from results import publish_result
 
@@ -157,8 +157,12 @@ def run_worker():
         decode_responses=False,  # Keep binary data as bytes for image decode.
     ) as r:
         logger.info("Worker online. Waiting on queue: %s", CONFIG.queue_name)
-        model = load_model()  # Preload model once to avoid first-frame latency.
-        logger.info("Model loaded and ready for inference.")
+        model = load_model(CONFIG.worker_model_device)  # Preload model once to avoid first-frame latency.
+        logger.info(
+            "Model loaded and ready for inference. device_preference=%s resolved_device=%s",
+            CONFIG.worker_model_device,
+            get_model_device(),
+        )
 
         try:
             while True:

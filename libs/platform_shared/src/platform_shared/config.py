@@ -35,6 +35,7 @@ class ServiceConfig:
     worker_results_dir: str
     worker_save_annotated: bool
     worker_annotated_every_n: int
+    worker_model_device: str
 
 
 def _repo_root_from(caller_file: str) -> Path:
@@ -164,6 +165,12 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         os.getenv("WORKER_ANNOTATED_EVERY_N"),
         30,
     )
+    worker_model_device = _to_choice(
+        "WORKER_MODEL_DEVICE",
+        os.getenv("WORKER_MODEL_DEVICE"),
+        "auto",
+        {"auto", "cpu", "cuda"},
+    )
 
     if producer_source_mode == "sample_files" and not producer_sample_root:
         default_sample_root = repo_root / "services/producer/sample-video/20140618_Sequence1a/Sequence1a"
@@ -217,4 +224,5 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         worker_results_dir=worker_results_dir,
         worker_save_annotated=worker_save_annotated,
         worker_annotated_every_n=worker_annotated_every_n,
+        worker_model_device=worker_model_device,
     )

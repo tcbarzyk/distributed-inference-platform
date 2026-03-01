@@ -7,17 +7,35 @@ from typing import Any
 import time
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 _MODEL = None
+_MODEL_DEVICE = "cpu"
 
 
-def load_model() -> YOLO:
-    """Load and cache the pretrained model."""
-    global _MODEL
+def _resolve_device(device_preference: str) -> str:
+    preferred = (device_preference or "auto").lower()
+    if preferred == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if preferred == "cuda" and not torch.cuda.is_available():
+        return "cpu"
+    return preferred
+
+
+def load_model(device_preference: str = "auto") -> YOLO:
+    """Load and cache the pretrained model on the requested/available device."""
+    global _MODEL, _MODEL_DEVICE
     if _MODEL is None:
         _MODEL = YOLO("yolov8n.pt")
+        _MODEL_DEVICE = _resolve_device(device_preference)
+        _MODEL.to(_MODEL_DEVICE)
     return _MODEL
+
+
+def get_model_device() -> str:
+    """Return the resolved model device currently in use."""
+    return _MODEL_DEVICE
 
 
 @dataclass(frozen=True)
@@ -54,7 +72,7 @@ def infer_image(model: YOLO, preprocessed_image: np.ndarray) -> tuple[Any, float
       - inference time in milliseconds
     """
     started = time.perf_counter()
-    raw_result = model(preprocessed_image, verbose=False)
+    raw_result = model(preprocessed_image, verbose=False, device=_MODEL_DEVICE)
     inference_ms = (time.perf_counter() - started) * 1000.0
     return raw_result, inference_ms
 
