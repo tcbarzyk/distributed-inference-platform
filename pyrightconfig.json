@@ -1,8 +1,4 @@
 {
-  "include": [
-    "libs",
-    "services"
-  ],
   "extraPaths": [
     "libs/platform_shared/src"
   ],

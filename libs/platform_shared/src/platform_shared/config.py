@@ -38,6 +38,7 @@ class ServiceConfig:
     worker_save_annotated: bool
     worker_annotated_every_n: int
     worker_model_device: str
+    api_source_active_window_seconds: int
 
 
 def _repo_root_from(caller_file: str) -> Path:
@@ -179,6 +180,11 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         "auto",
         {"auto", "cpu", "cuda"},
     )
+    api_source_active_window_seconds = _to_int(
+        "API_SOURCE_ACTIVE_WINDOW_SECONDS",
+        os.getenv("API_SOURCE_ACTIVE_WINDOW_SECONDS"),
+        10,
+    )
 
     if producer_source_mode == "sample_files" and not producer_sample_root:
         default_sample_root = repo_root / "services/producer/sample-video/20140618_Sequence1a/Sequence1a"
@@ -208,6 +214,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("PRODUCER_FRAME_KEY_PREFIX cannot be empty")
     if producer_file_glob == "":
         raise ValueError("PRODUCER_FILE_GLOB cannot be empty")
+    if api_source_active_window_seconds <= 0:
+        raise ValueError("API_SOURCE_ACTIVE_WINDOW_SECONDS must be greater than 0")
 
     return ServiceConfig(
         redis_host=redis_host,
@@ -237,4 +245,5 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         worker_save_annotated=worker_save_annotated,
         worker_annotated_every_n=worker_annotated_every_n,
         worker_model_device=worker_model_device,
+        api_source_active_window_seconds=api_source_active_window_seconds,
     )
