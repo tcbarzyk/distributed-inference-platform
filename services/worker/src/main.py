@@ -9,6 +9,7 @@ Flow:
 5. Track metrics and emit interval/final summaries.
 """
 
+import json
 import logging
 import sys
 import time
@@ -31,7 +32,7 @@ if str(SHARED_SRC) not in sys.path:
 from inference import InferenceInput, get_model_device, load_model, run_inference
 from platform_shared.config import load_service_config
 from platform_shared.schemas import Detection, InferenceResult, QueueJob
-from results import publish_result
+from results import publish_result, encode_live_frame_jpeg
 
 CONFIG = load_service_config(caller_file=__file__)
 SCHEMA_VERSION = 1
@@ -59,6 +60,11 @@ class WorkerMetrics:
     inference_failures: int = 0
     publish_failures: int = 0
     redis_errors: int = 0
+    live_frame_plans: int = 0
+    live_frame_skipped: int = 0
+    live_frame_encode_failures: int = 0
+    live_frame_write_failures: int = 0
+    live_frame_written: int = 0
     processed_ok: int = 0
     deleted_blobs: int = 0
     queue_latency_samples: int = 0
@@ -108,6 +114,7 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         (
             "Summary interval | service=worker elapsed_s=%.1f popped=%d processed=%d invalid=%d "
             "blob_misses=%d decode_failures=%d inference_failures=%d publish_failures=%d redis_errors=%d "
+            "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
             "avg_queue_ms=%.2f throughput_fps=%.2f"
         ),
         elapsed,
@@ -119,6 +126,11 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         metrics.inference_failures,
         metrics.publish_failures,
         metrics.redis_errors,
+        metrics.live_frame_plans,
+        metrics.live_frame_written,
+        metrics.live_frame_skipped,
+        metrics.live_frame_encode_failures,
+        metrics.live_frame_write_failures,
         avg_queue_ms,
         throughput,
     )
@@ -135,6 +147,7 @@ def _log_summary(metrics: WorkerMetrics) -> None:
             "Summary final | service=worker elapsed_s=%.3f popped=%d json_ok=%d processed=%d "
             "invalid=%d missing_frame_key=%d blob_misses=%d decode_failures=%d "
             "inference_failures=%d publish_failures=%d redis_errors=%d deleted_blobs=%d avg_queue_ms=%.2f "
+            "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
             "throughput_fps=%.2f"
         ),
         elapsed,
@@ -150,6 +163,11 @@ def _log_summary(metrics: WorkerMetrics) -> None:
         metrics.redis_errors,
         metrics.deleted_blobs,
         avg_queue_ms,
+        metrics.live_frame_plans,
+        metrics.live_frame_written,
+        metrics.live_frame_skipped,
+        metrics.live_frame_encode_failures,
+        metrics.live_frame_write_failures,
         throughput,
     )
 
@@ -258,6 +276,7 @@ def _build_result_model(job: QueueJob, inference_result: dict[str, Any], now_us:
 
 
 def _publish_result_safe(
+    r: redis.Redis,
     image,
     inference_result: InferenceResult,
     metrics: WorkerMetrics,
@@ -268,6 +287,13 @@ def _publish_result_safe(
             config=CONFIG,
             inference_result=inference_result,
             image=image,
+        )
+        _publish_live_frame_safe(
+          r=r,
+          inference_result=inference_result,
+          image=image,
+          publish_meta=publish_meta,
+          metrics=metrics,
         )
         logger.debug(
             "Result published: file=%s detections=%d annotated=%s",
@@ -310,6 +336,18 @@ def run_worker():
             "Model loaded and ready for inference. device_preference=%s resolved_device=%s",
             CONFIG.worker_model_device,
             get_model_device(),
+        )
+        logger.info(
+            (
+                "Live frame settings | enabled=%s every_n=%d ttl_s=%d "
+                "jpeg_quality=%d frame_key_prefix=%s meta_key_prefix=%s"
+            ),
+            CONFIG.worker_live_frames_enabled,
+            CONFIG.worker_live_frames_every_n,
+            CONFIG.worker_live_frame_ttl_seconds,
+            CONFIG.worker_live_frames_jpeg_quality,
+            CONFIG.worker_live_frame_key_prefix,
+            CONFIG.worker_live_meta_key_prefix,
         )
 
         try:
@@ -384,7 +422,7 @@ def run_worker():
                     inference_result.pipeline_ms,
                 )
 
-                _publish_result_safe(image, inference_result, metrics)
+                _publish_result_safe(r=r, image=image, inference_result=inference_result, metrics=metrics)
                 _delete_frame_key(r, job.frame_key, metrics)
 
                 _maybe_log_interval_summary(metrics)
@@ -397,6 +435,67 @@ def run_worker():
             _log_summary(metrics)
 
     logger.info("Worker connection closed.")
+
+def _publish_live_frame_safe(
+  *,
+  r: redis.Redis,
+  inference_result: InferenceResult,
+  image,
+  publish_meta: dict[str, Any],
+  metrics: WorkerMetrics,
+) -> None:
+    plan = publish_meta.get("live_frame_plan") or {}
+    metrics.live_frame_plans += 1
+    if not plan.get("enabled") or not plan.get("should_publish"):
+        metrics.live_frame_skipped += 1
+        logger.debug(
+            "Live frame skipped frame_id=%s source_id=%s reason=%s enabled=%s should_publish=%s",
+            inference_result.frame_id,
+            inference_result.source_id,
+            plan.get("reason"),
+            plan.get("enabled"),
+            plan.get("should_publish"),
+        )
+        return
+    frame_key = plan["frame_key"]
+    meta_key = plan["meta_key"]
+    ttl = int(plan["ttl_seconds"])
+    metadata = dict(plan.get("metadata") or {})
+
+    jpeg_bytes = encode_live_frame_jpeg(
+        image=image,
+        detections=[d.to_dict() for d in inference_result.detections],
+        jpeg_quality=CONFIG.worker_live_frames_jpeg_quality,
+    )
+    if jpeg_bytes is None:
+        metrics.live_frame_encode_failures += 1
+        logger.error("Failed to encode live frame JPEG for frame_id=%s", inference_result.frame_id)
+        return
+    metadata["byte_length"] = len(jpeg_bytes)
+    metadata["written_at_us"] = int(time.time() * 1_000_000)
+    try:
+        pipe = r.pipeline(transaction=True)
+        pipe.set(frame_key, jpeg_bytes, ex=ttl)
+        pipe.set(meta_key, json.dumps(metadata), ex=ttl)
+        # Optional for future WS/MJPEG fanout:
+        # pipe.publish(f"live.frames.{inference_result.source_id}", jpeg_bytes)
+        # pipe.publish(f"live.meta.{inference_result.source_id}", json.dumps(metadata))
+        pipe.execute()
+        metrics.live_frame_written += 1
+        logger.debug(
+            "Live frame written source_id=%s frame_id=%s frame_key=%s meta_key=%s bytes=%d ttl_s=%d",
+            inference_result.source_id,
+            inference_result.frame_id,
+            frame_key,
+            meta_key,
+            len(jpeg_bytes),
+            ttl,
+        )
+    except redis.RedisError as exc:
+        metrics.redis_errors += 1
+        metrics.live_frame_write_failures += 1
+        logger.warning("Live frame Redis publish failed source=%s: %s",
+  inference_result.source_id, exc)
 
 
 if __name__ == "__main__":

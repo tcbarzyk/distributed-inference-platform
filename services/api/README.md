@@ -26,6 +26,7 @@ This README documents:
 - Needs latest annotated frame metadata and fast updates.
 - Primary endpoints:
   - `GET /sources/{source_id}/latest-frame` (bootstrap/refresh)
+  - `GET /sources/{source_id}/frame/latest.jpg` (latest image bytes)
   - `WS /ws/sources/{source_id}` (continuous updates)
 
 3. Live metrics/events dashboard
@@ -173,9 +174,18 @@ Status tags:
 - Notes:
   - If you store images in object storage (MinIO/S3), return URL.
   - If you keep Redis-only frame bytes, return a short-lived API URL that streams bytes.
+  - Current implementation checks Redis live metadata first (`live:meta:latest:{source_id}`), then falls back to DB.
   - Current v1 uses `processed_at_us` as `capture_ts_us` fallback until capture timestamp is persisted in SQL.
 
-2. `GET /sources/{source_id}/stats` (`IMPLEMENTED`, minimal v1)
+2. `GET /sources/{source_id}/frame/latest.jpg` (`IMPLEMENTED`, minimal v1)
+- Purpose: return latest live annotated frame bytes for a source.
+- Frontend use: direct `<img>` source for bootstrap/live refresh loops.
+- Behavior:
+  - Resolves frame key from Redis live metadata.
+  - Returns `image/jpeg` bytes when present.
+  - Returns `404` when missing/expired.
+
+3. `GET /sources/{source_id}/stats` (`IMPLEMENTED`, minimal v1)
 - Purpose: current rolling metrics for dashboard cards.
 - Frontend use: live KPI cards and small trend charts.
 - Suggested fields:
@@ -288,6 +298,8 @@ docker compose up --build api redis postgres
 - `API_SOURCE_ACTIVE_WINDOW_SECONDS`:
   - Default: `10`
   - Meaning: how recent a source's latest result must be to mark `is_active=true` in `GET /sources`.
+- `WORKER_LIVE_FRAME_KEY_PREFIX` / `WORKER_LIVE_META_KEY_PREFIX`:
+  - Shared key prefixes used by API to locate latest live frame metadata/bytes in Redis.
 
 ## Current Tradeoffs
 

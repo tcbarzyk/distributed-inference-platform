@@ -9,12 +9,13 @@ Current responsibilities:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Generator
 
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -124,6 +125,82 @@ def _sources_with_activity_query(db: Session, last_result_subq):
 def _is_source_active(last_result_ts_us: int | None, *, active_after_us: int) -> bool:
     """Evaluate source liveness from last result timestamp and recency threshold."""
     return last_result_ts_us is not None and last_result_ts_us >= active_after_us
+
+
+def _safe_source_id(value: str) -> str:
+    """Normalize source id for Redis key segments shared with worker writes."""
+    return value.replace("/", "_").replace(":", "_")
+
+
+def _live_meta_key_for_source(source_id: str) -> str:
+    """Build Redis key for latest live-frame metadata for one source."""
+    return f"{CONFIG.worker_live_meta_key_prefix}:{_safe_source_id(source_id)}"
+
+
+def _live_frame_key_for_source(source_id: str) -> str:
+    """Build Redis key for latest live-frame JPEG bytes for one source."""
+    return f"{CONFIG.worker_live_frame_key_prefix}:{_safe_source_id(source_id)}"
+
+
+def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
+    """Fetch and parse live-frame metadata from Redis for one source.
+
+    Returns `None` when metadata does not exist, is invalid, or Redis is
+    unavailable. Callers can then fall back to DB-backed behavior.
+    """
+    meta_key = _live_meta_key_for_source(source_id)
+    try:
+        with redis.Redis(
+            host=CONFIG.redis_host,
+            port=CONFIG.redis_port,
+            db=CONFIG.redis_db,
+            password=CONFIG.redis_password,
+            socket_timeout=1,
+            decode_responses=True,
+        ) as r:
+            raw = r.get(meta_key)
+    except redis.RedisError as exc:
+        logger.warning("Redis live-meta read failed for key=%s: %s", meta_key, exc)
+        return None
+
+    if not raw:
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("Invalid live-meta JSON for key=%s: %s", meta_key, exc)
+        return None
+
+    if not isinstance(parsed, dict):
+        logger.warning("Invalid live-meta payload type for key=%s", meta_key)
+        return None
+
+    # Ensure frame_key exists for downstream image fetch paths.
+    if not parsed.get("frame_key"):
+        parsed["frame_key"] = _live_frame_key_for_source(source_id)
+    return parsed
+
+
+def _get_live_frame_bytes_for_key(frame_key: str) -> bytes | None:
+    """Fetch latest live-frame bytes from Redis by frame key."""
+    try:
+        with redis.Redis(
+            host=CONFIG.redis_host,
+            port=CONFIG.redis_port,
+            db=CONFIG.redis_db,
+            password=CONFIG.redis_password,
+            socket_timeout=1,
+            decode_responses=False,
+        ) as r:
+            raw = r.get(frame_key)
+    except redis.RedisError as exc:
+        logger.warning("Redis live-frame read failed for key=%s: %s", frame_key, exc)
+        return None
+
+    if raw is None or not isinstance(raw, (bytes, bytearray)):
+        return None
+    return bytes(raw)
 
 
 def _result_kind_from_row(row: ResultModel) -> str:
@@ -422,6 +499,30 @@ async def get_latest_frame(source_id: str, db: Session = Depends(get_db)) -> Lat
         if not source_exists:
             raise HTTPException(status_code=404, detail="Source not found")
 
+        live_meta = _get_live_meta_for_source(source_id)
+        if live_meta is not None:
+            processed_at_us_raw = live_meta.get("processed_at_us")
+            capture_ts_us_raw = live_meta.get("capture_ts_us", processed_at_us_raw)
+            try:
+                processed_at_us = int(processed_at_us_raw) if processed_at_us_raw is not None else None
+            except (TypeError, ValueError):
+                processed_at_us = None
+            try:
+                capture_ts_us = int(capture_ts_us_raw) if capture_ts_us_raw is not None else None
+            except (TypeError, ValueError):
+                capture_ts_us = None
+
+            if capture_ts_us is not None:
+                return LatestFrameResponse(
+                    source_id=source_id,
+                    capture_ts_us=capture_ts_us,
+                    processed_at_us=processed_at_us,
+                    job_id=(str(live_meta.get("job_id")) if live_meta.get("job_id") is not None else None),
+                    result_id=None,
+                    annotated_image_url=f"/sources/{source_id}/frame/latest.jpg",
+                    frame_key=(str(live_meta.get("frame_key")) if live_meta.get("frame_key") else None),
+                )
+
         row = (
             db.query(ResultModel)
             .filter(ResultModel.source_id == source_id)
@@ -443,6 +544,42 @@ async def get_latest_frame(source_id: str, db: Session = Depends(get_db)) -> Lat
         )
     except SQLAlchemyError as exc:
         logger.exception("Database query failed for /sources/%s/latest-frame: %s", source_id, exc)
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+
+
+@app.get(
+    "/sources/{source_id}/frame/latest.jpg",
+    responses={200: {"content": {"image/jpeg": {}}}, 404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_latest_frame_image(source_id: str, db: Session = Depends(get_db)) -> Response:
+    """Return latest live annotated frame bytes for one source (JPEG)."""
+    try:
+        source_exists = (
+            db.query(SourceModel.source_id)
+            .filter(SourceModel.source_id == source_id)
+            .first()
+            is not None
+        )
+        if not source_exists:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        live_meta = _get_live_meta_for_source(source_id)
+        if live_meta is None:
+            raise HTTPException(status_code=404, detail="No live frame available for source")
+
+        frame_key = str(live_meta.get("frame_key") or _live_frame_key_for_source(source_id))
+        frame_bytes = _get_live_frame_bytes_for_key(frame_key)
+        if frame_bytes is None:
+            raise HTTPException(status_code=404, detail="Live frame expired or unavailable")
+
+        content_type = str(live_meta.get("content_type") or "image/jpeg")
+        return Response(
+            content=frame_bytes,
+            media_type=content_type,
+            headers={"Cache-Control": "no-store"},
+        )
+    except SQLAlchemyError as exc:
+        logger.exception("Database query failed for /sources/%s/frame/latest.jpg: %s", source_id, exc)
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 

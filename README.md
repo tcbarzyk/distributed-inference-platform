@@ -23,7 +23,10 @@ The platform currently has three application services plus infrastructure:
 3. `api`
 - FastAPI service.
 - Health endpoints (`/health/live`, `/health/ready`).
-- DB-backed read endpoint (`GET /results`).
+- DB-backed read endpoints (`/results`, `/sources`, `/sources/{source_id}`, `/sources/{source_id}/events`, `/sources/{source_id}/stats`).
+- Live-frame bootstrap endpoints:
+  - `GET /sources/{source_id}/latest-frame` (Redis-first, DB fallback)
+  - `GET /sources/{source_id}/frame/latest.jpg` (latest JPEG bytes from Redis key)
 
 4. Infrastructure
 - Redis for queue + frame blob handoff.
@@ -60,7 +63,8 @@ platform/
 2. Producer enqueues `QueueJob` to Redis queue.
 3. Worker consumes job, pulls frame, infers detections.
 4. Worker publishes result (`local_jsonl` or PostgreSQL).
-5. API reads persisted results from PostgreSQL (`GET /results`).
+5. Worker writes latest annotated frame + metadata to Redis (feature-flagged).
+6. API reads persisted results from PostgreSQL and live frame metadata/bytes from Redis.
 
 ## Run with Docker Compose
 
@@ -76,6 +80,7 @@ Common endpoints:
 - Liveness: `http://localhost:8000/health/live`
 - Readiness: `http://localhost:8000/health/ready`
 - Results: `http://localhost:8000/results`
+- Sources: `http://localhost:8000/sources`
 
 ## Faster Worker Dev Loop (No Rebuild for Code-Only Changes)
 
@@ -128,13 +133,14 @@ Implemented:
 
 - Redis producer/worker pipeline
 - Shared queue/result schemas
-- API health and DB read endpoint
+- Worker live-frame Redis write path (configurable enable/cadence/TTL)
+- API health and DB read endpoints
 - Shared SQLAlchemy models and Alembic baseline migration
 
 In progress:
 
 - Live streaming results channel to frontend (WebSocket/SSE)
-- Video streaming endpoint for browser UI
+- Richer live stats and per-source queue lag metrics
 
 ## Key Decisions and Tradeoffs
 
@@ -171,7 +177,8 @@ In progress:
 - Worker publishes result events; API pushes via WebSocket/SSE.
 
 4. Live video feed
-- Start with MJPEG or WS frames, later consider WebRTC for low latency.
+- Bootstrap available now via `GET /sources/{source_id}/frame/latest.jpg`.
+- Next: MJPEG or WS push transport, later consider WebRTC for low latency.
 
 5. Backpressure and flow control
 - Adaptive producer throttling and queue depth controls.
@@ -200,7 +207,8 @@ The frontend is planned as a live operations dashboard with these core component
 
 2. Live video feed
 - Show annotated live frames for selected source.
-- Initial transport target: MJPEG endpoint (`/stream/{source_id}`).
+- Current bootstrap: `GET /sources/{source_id}/latest-frame` + `/sources/{source_id}/frame/latest.jpg`.
+- Initial continuous transport target: MJPEG endpoint (to be implemented).
 - Later upgrade path: WebRTC for lower latency/better bandwidth efficiency.
 
 3. Live dashboard
@@ -219,7 +227,7 @@ The frontend should use both SQL-backed APIs and realtime streaming:
 - Use for filtering, pagination, historical charts, and reconnect recovery.
 
 2. WebSocket stream (live updates)
-- Subscribe to `/ws/results` for low-latency event updates.
+- Subscribe to `/ws/sources/{source_id}` for low-latency source-scoped updates.
 - Append live events to UI while keeping a bounded in-memory window.
 
 3. Reconciliation
@@ -247,16 +255,18 @@ Use two metric layers:
 - Run stack, verify inserts into `sources`, `jobs`, `results`.
 
 2. Add API endpoints for frontend hydration.
-- `GET /sources`
-- `GET /results` enhancements (pagination/time windows/filters)
-- `GET /results/{job_id}` detail
+- `GET /sources` (implemented)
+- `GET /sources/{source_id}` (implemented)
+- `GET /results` (implemented, keyset pagination + filters)
+- `GET /sources/{source_id}/events` (implemented)
 
 3. Add realtime result stream.
 - Worker publishes post-commit result events.
-- API exposes `WS /ws/results` and fanout to clients.
+- API exposes `WS /ws/sources/{source_id}` and fanout to clients.
 
 4. Add live annotated video endpoint.
-- Implement MJPEG stream endpoint per source for initial demo.
+- `GET /sources/{source_id}/frame/latest.jpg` is implemented for bootstrap/latest frame reads.
+- Next: implement MJPEG stream endpoint per source for continuous playback.
 
 5. Build frontend v1.
 - Source selector

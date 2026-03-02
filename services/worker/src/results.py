@@ -6,6 +6,7 @@ consume/inference loop so failures can be handled centrally in worker metrics.
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime
 import json
 from pathlib import Path
@@ -22,6 +23,80 @@ from platform_shared.schemas import InferenceResult
 from db import SessionLocal
 
 
+@dataclass(frozen=True)
+class LiveFramePublishPlan:
+    """Prepared plan for live-frame publication (no Redis side effects yet)."""
+
+    enabled: bool
+    should_publish: bool
+    frame_key: str | None
+    meta_key: str | None
+    ttl_seconds: int
+    reason: str
+    metadata: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _safe_source_id(value: str | None) -> str:
+    """Normalize source id for Redis key segments."""
+    return (value or "source").replace("/", "_").replace(":", "_")
+
+
+def _build_live_frame_key(config: ServiceConfig, source_id: str) -> str:
+    """Build Redis key where the latest annotated JPEG bytes will be stored."""
+    return f"{config.worker_live_frame_key_prefix}:{_safe_source_id(source_id)}"
+
+
+def _build_live_meta_key(config: ServiceConfig, source_id: str) -> str:
+    """Build Redis key where the latest live-frame metadata JSON will be stored."""
+    return f"{config.worker_live_meta_key_prefix}:{_safe_source_id(source_id)}"
+
+
+def _should_publish_live_frame(config: ServiceConfig, frame_id: int | None) -> bool:
+    """Determine whether this frame qualifies for live-frame publication cadence."""
+    if not config.worker_live_frames_enabled:
+        return False
+    if frame_id is None:
+        return False
+    return frame_id % config.worker_live_frames_every_n == 0
+
+
+def build_live_frame_publish_plan(
+    *,
+    config: ServiceConfig,
+    inference_result: InferenceResult,
+) -> LiveFramePublishPlan:
+    """Prepare key names and metadata envelope for future Redis live-frame writes.
+
+    This function is intentionally side-effect free. Redis SET/PUBLISH logic is
+    added later, while callers can already rely on one stable plan shape.
+    """
+    source_id = inference_result.source_id
+    frame_key = _build_live_frame_key(config, source_id)
+    meta_key = _build_live_meta_key(config, source_id)
+    should_publish = _should_publish_live_frame(config, inference_result.frame_id)
+    reason = "ok" if should_publish else "disabled_or_filtered"
+    metadata = {
+        "source_id": source_id,
+        "job_id": inference_result.job_id,
+        "frame_id": inference_result.frame_id,
+        "processed_at_us": inference_result.processed_at_us,
+        "frame_key": frame_key,
+        "content_type": "image/jpeg",
+    }
+    return LiveFramePublishPlan(
+        enabled=config.worker_live_frames_enabled,
+        should_publish=should_publish,
+        frame_key=frame_key if should_publish else None,
+        meta_key=meta_key if should_publish else None,
+        ttl_seconds=config.worker_live_frame_ttl_seconds,
+        reason=reason,
+        metadata=metadata,
+    )
+
+
 def _ensure_dirs(config: ServiceConfig) -> tuple[Path, Path]:
     """Create local output directories used by JSONL mode if missing."""
     results_dir = Path(config.worker_results_dir)
@@ -36,6 +111,12 @@ def _results_file_path(results_dir: Path) -> Path:
     day = datetime.now().strftime("%Y%m%d")
     return results_dir / f"results-{day}.jsonl"
 
+def encode_live_frame_jpeg(*, image: np.ndarray, detections: list[dict[str, Any]], jpeg_quality: int) -> bytes | None:
+    rendered = _draw_detections(image, detections)
+    ok, encoded = cv2.imencode(".jpg", rendered, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+    if not ok:
+        return None
+    return encoded.tobytes()
 
 def _draw_detections(image: np.ndarray, detections: list[dict[str, Any]]) -> np.ndarray:
     """Render bounding boxes and labels for optional debug snapshots."""
@@ -63,6 +144,7 @@ def publish_to_json(*,
     """Persist one inference result to local JSONL (and optional annotated image)."""
     results_dir, annotated_dir = _ensure_dirs(config)
     results_file = _results_file_path(results_dir)
+    live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
 
     record = inference_result.to_dict()
 
@@ -88,6 +170,7 @@ def publish_to_json(*,
         "results_file": str(results_file),
         "annotated_path": str(annotated_path) if annotated_path else None,
         "detections_count": len(record["detections"]),
+        "live_frame_plan": live_frame_plan.to_dict(),
     }
 
 def publish_to_postgres(*,
@@ -103,8 +186,8 @@ def publish_to_postgres(*,
     - insert one `result` row
     - commit or rollback atomically
     """
-    del config  # kept for signature parity with other publish modes
     del image   # image is not needed for DB mode
+    live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
 
     session: Session = SessionLocal()
     try:
@@ -169,6 +252,7 @@ def publish_to_postgres(*,
             "results_file": None,
             "annotated_path": None,
             "detections_count": len(result_row.detections_json),
+            "live_frame_plan": live_frame_plan.to_dict(),
         }
     except Exception:
         # Roll back partial work so source/job/result remain transactionally consistent.

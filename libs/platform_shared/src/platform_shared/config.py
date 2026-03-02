@@ -38,6 +38,12 @@ class ServiceConfig:
     worker_save_annotated: bool
     worker_annotated_every_n: int
     worker_model_device: str
+    worker_live_frames_enabled: bool
+    worker_live_frames_every_n: int
+    worker_live_frame_key_prefix: str
+    worker_live_meta_key_prefix: str
+    worker_live_frame_ttl_seconds: int
+    worker_live_frames_jpeg_quality: int
     api_source_active_window_seconds: int
 
 
@@ -180,6 +186,24 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         "auto",
         {"auto", "cpu", "cuda"},
     )
+    worker_live_frames_enabled = _to_bool(os.getenv("WORKER_LIVE_FRAMES_ENABLED"), False)
+    worker_live_frames_every_n = _to_int(
+        "WORKER_LIVE_FRAMES_EVERY_N",
+        os.getenv("WORKER_LIVE_FRAMES_EVERY_N"),
+        1,
+    )
+    worker_live_frame_key_prefix = (os.getenv("WORKER_LIVE_FRAME_KEY_PREFIX") or "live:frame:latest").strip()
+    worker_live_meta_key_prefix = (os.getenv("WORKER_LIVE_META_KEY_PREFIX") or "live:meta:latest").strip()
+    worker_live_frame_ttl_seconds = _to_int(
+        "WORKER_LIVE_FRAME_TTL_SECONDS",
+        os.getenv("WORKER_LIVE_FRAME_TTL_SECONDS"),
+        15,
+    )
+    worker_live_frames_jpeg_quality = _to_int(
+        "WORKER_LIVE_FRAMES_JPEG_QUALITY",
+        os.getenv("WORKER_LIVE_FRAMES_JPEG_QUALITY"),
+        80,
+    )
     api_source_active_window_seconds = _to_int(
         "API_SOURCE_ACTIVE_WINDOW_SECONDS",
         os.getenv("API_SOURCE_ACTIVE_WINDOW_SECONDS"),
@@ -210,10 +234,20 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("WORKER_SUMMARY_LOG_INTERVAL_SECONDS must be greater than 0")
     if worker_annotated_every_n <= 0:
         raise ValueError("WORKER_ANNOTATED_EVERY_N must be greater than 0")
+    if worker_live_frames_every_n <= 0:
+        raise ValueError("WORKER_LIVE_FRAMES_EVERY_N must be greater than 0")
+    if worker_live_frame_ttl_seconds <= 0:
+        raise ValueError("WORKER_LIVE_FRAME_TTL_SECONDS must be greater than 0")
+    if worker_live_frames_jpeg_quality < 1 or worker_live_frames_jpeg_quality > 100:
+        raise ValueError("WORKER_LIVE_FRAMES_JPEG_QUALITY must be between 1 and 100")
     if producer_frame_key_prefix == "":
         raise ValueError("PRODUCER_FRAME_KEY_PREFIX cannot be empty")
     if producer_file_glob == "":
         raise ValueError("PRODUCER_FILE_GLOB cannot be empty")
+    if worker_live_frame_key_prefix == "":
+        raise ValueError("WORKER_LIVE_FRAME_KEY_PREFIX cannot be empty")
+    if worker_live_meta_key_prefix == "":
+        raise ValueError("WORKER_LIVE_META_KEY_PREFIX cannot be empty")
     if api_source_active_window_seconds <= 0:
         raise ValueError("API_SOURCE_ACTIVE_WINDOW_SECONDS must be greater than 0")
 
@@ -245,5 +279,11 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         worker_save_annotated=worker_save_annotated,
         worker_annotated_every_n=worker_annotated_every_n,
         worker_model_device=worker_model_device,
+        worker_live_frames_enabled=worker_live_frames_enabled,
+        worker_live_frames_every_n=worker_live_frames_every_n,
+        worker_live_frame_key_prefix=worker_live_frame_key_prefix,
+        worker_live_meta_key_prefix=worker_live_meta_key_prefix,
+        worker_live_frame_ttl_seconds=worker_live_frame_ttl_seconds,
+        worker_live_frames_jpeg_quality=worker_live_frames_jpeg_quality,
         api_source_active_window_seconds=api_source_active_window_seconds,
     )

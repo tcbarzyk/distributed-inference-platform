@@ -10,8 +10,9 @@ Consumes queued frame jobs, runs YOLO inference, and publishes structured result
 4. Fetch frame bytes from Redis and decode to image.
 5. Run preprocessing + inference + detection postprocessing.
 6. Publish `InferenceResult` via configured results mode.
-7. Delete frame blob from Redis after processing.
-8. Emit periodic/final metrics logs.
+7. Optionally write latest annotated frame + metadata to Redis for API live bootstrap.
+8. Delete frame blob from Redis after processing.
+9. Emit periodic/final metrics logs.
 
 ## Processing Pipeline
 
@@ -24,6 +25,9 @@ Consumes queued frame jobs, runs YOLO inference, and publishes structured result
 7. Publish result:
 - `local_jsonl` (implemented)
 - `postgres` (implemented)
+8. (Optional) Publish latest annotated frame and metadata to Redis:
+- frame key: `<WORKER_LIVE_FRAME_KEY_PREFIX>:<source_id>`
+- metadata key: `<WORKER_LIVE_META_KEY_PREFIX>:<source_id>`
 
 ## Results Modes
 
@@ -37,6 +41,20 @@ Consumes queued frame jobs, runs YOLO inference, and publishes structured result
   - `jobs`
   - `results`
 - Implemented with transactional source/job upsert + result insert.
+
+## Live Frame Redis Publish
+
+When enabled, worker writes the latest annotated JPEG and metadata per source to Redis.
+
+- Enable toggle: `WORKER_LIVE_FRAMES_ENABLED=true`
+- Cadence: `WORKER_LIVE_FRAMES_EVERY_N`
+- Key prefixes:
+  - `WORKER_LIVE_FRAME_KEY_PREFIX`
+  - `WORKER_LIVE_META_KEY_PREFIX`
+- TTL: `WORKER_LIVE_FRAME_TTL_SECONDS`
+- JPEG quality: `WORKER_LIVE_FRAMES_JPEG_QUALITY`
+
+This path is intended for live bootstrap/display and is not a durable storage system.
 
 ## Key Files
 
@@ -53,6 +71,12 @@ Consumes queued frame jobs, runs YOLO inference, and publishes structured result
 - `WORKER_RESULTS_DIR`
 - `WORKER_SAVE_ANNOTATED`
 - `WORKER_ANNOTATED_EVERY_N`
+- `WORKER_LIVE_FRAMES_ENABLED`
+- `WORKER_LIVE_FRAMES_EVERY_N`
+- `WORKER_LIVE_FRAME_KEY_PREFIX`
+- `WORKER_LIVE_META_KEY_PREFIX`
+- `WORKER_LIVE_FRAME_TTL_SECONDS`
+- `WORKER_LIVE_FRAMES_JPEG_QUALITY`
 - `WORKER_MODEL_DEVICE`
 - `WORKER_SUMMARY_LOG_INTERVAL_SECONDS`
 
@@ -90,6 +114,12 @@ After code edits:
 docker compose restart worker-dev
 ```
 
+Scale:
+
+```bash
+docker compose --profile dev up -d --scale worker-dev=3 worker-dev
+```
+
 Rebuild is still required when changing:
 
 - `services/worker/requirements.txt`
@@ -113,5 +143,5 @@ Rebuild is still required when changing:
 ## Near-term Improvements
 
 1. Add robust retry/idempotency policy for DB write failures.
-2. Emit realtime result events for API WebSocket broadcasting.
+2. Emit realtime Pub/Sub events for API WebSocket fanout.
 3. Add richer job lifecycle transitions (`queued|processing|done|failed`).
