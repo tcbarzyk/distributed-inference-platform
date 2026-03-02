@@ -10,6 +10,7 @@ The platform currently has three application services plus infrastructure:
 - Reads frames from sample files or livestream input.
 - Encodes frames and stores frame bytes in Redis with TTL.
 - Pushes `QueueJob` metadata to a Redis queue.
+- Supports merged timeline mode and optional parallel-per-source publish mode.
 
 2. `worker`
 - Consumes jobs from Redis.
@@ -155,6 +156,9 @@ In progress:
 6. Docker-first local workflow
 - Tradeoff: reproducible environment, but slower rebuild cycles than pure local venv runs.
 
+7. Optional producer parallel-source mode
+- Tradeoff: increases per-source throughput and realism, but removes global cross-source ordering guarantees.
+
 ## Future Features for a Complete Distributed System
 
 1. Reliable delivery semantics
@@ -186,3 +190,94 @@ In progress:
 
 10. Durability and platform ops
 - Backups, migration lifecycle policy, CI checks, chaos/load testing, deployment strategy.
+
+## Frontend Design (Planned)
+
+The frontend is planned as a live operations dashboard with these core components:
+
+1. Source selector
+- Select active camera/source context for all panels.
+
+2. Live video feed
+- Show annotated live frames for selected source.
+- Initial transport target: MJPEG endpoint (`/stream/{source_id}`).
+- Later upgrade path: WebRTC for lower latency/better bandwidth efficiency.
+
+3. Live dashboard
+- Real-time events and operational metrics.
+- Panels for throughput, latency, queue lag, errors, recent detections.
+
+4. Chaos controls (later)
+- Controlled fault injection (for example stop/restart worker) behind admin controls.
+
+### SQL + WebSocket Data Model for Frontend
+
+The frontend should use both SQL-backed APIs and realtime streaming:
+
+1. SQL-backed REST (history/filters/source of truth)
+- On load: hydrate from DB-backed endpoints (`/sources`, `/results`).
+- Use for filtering, pagination, historical charts, and reconnect recovery.
+
+2. WebSocket stream (live updates)
+- Subscribe to `/ws/results` for low-latency event updates.
+- Append live events to UI while keeping a bounded in-memory window.
+
+3. Reconciliation
+- On WS reconnect/tab resume, re-fetch recent DB results (for example `since_us`) to fill gaps.
+
+This pattern ensures:
+- durable correctness via SQL
+- responsive UX via streaming
+
+### Metrics Strategy
+
+Use two metric layers:
+
+1. App-level metrics (short-term)
+- Derived from result events and DB queries.
+- Useful for immediate operational UI feedback.
+
+2. Observability stack metrics (long-term)
+- Prometheus/Grafana metrics from service `/metrics` endpoints.
+- Used for infrastructure/SRE-level monitoring and alerting.
+
+## Next Steps (Execution Order)
+
+1. Validate worker PostgreSQL write path end-to-end.
+- Run stack, verify inserts into `sources`, `jobs`, `results`.
+
+2. Add API endpoints for frontend hydration.
+- `GET /sources`
+- `GET /results` enhancements (pagination/time windows/filters)
+- `GET /results/{job_id}` detail
+
+3. Add realtime result stream.
+- Worker publishes post-commit result events.
+- API exposes `WS /ws/results` and fanout to clients.
+
+4. Add live annotated video endpoint.
+- Implement MJPEG stream endpoint per source for initial demo.
+
+5. Build frontend v1.
+- Source selector
+- Live video panel
+- Live events/metrics dashboard
+- Historical results table fed by SQL-backed API
+
+6. Add reconnect and gap-recovery behavior.
+- WS reconnect with backoff
+- DB catch-up query on reconnect
+
+7. Expand metrics and dashboards.
+- Introduce Prometheus metrics endpoints and Grafana dashboards.
+
+8. Define and implement job/result reliability semantics.
+- Duplicate policy
+- Retry/idempotency behavior
+- Optional dead-letter workflow
+
+9. Add guarded chaos tooling.
+- Admin-only controls to simulate worker failures/restarts.
+
+10. Prepare demo and ops checklist.
+- Health checks, startup order, migration command, smoke tests.

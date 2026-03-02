@@ -26,7 +26,8 @@ if str(SHARED_SRC) not in sys.path:
 import redis
 import logging
 import time
-from frame_discovery import discover_frames
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from frame_discovery import discover_frames, discover_frames_by_source
 import cv2
 from dataclasses import dataclass
 
@@ -223,6 +224,96 @@ def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
         metrics.total_sleep_seconds,
         effective_fps,
     )
+
+
+def _merge_metrics(total: ProducerMetrics, part: ProducerMetrics) -> None:
+    """Aggregate one per-source metrics object into the service-level total."""
+    total.discovered_frames += part.discovered_frames
+    total.attempted_frames += part.attempted_frames
+    total.published_frames += part.published_frames
+    total.read_failures += part.read_failures
+    total.encode_failures += part.encode_failures
+    total.redis_set_failures += part.redis_set_failures
+    total.queue_push_failures += part.queue_push_failures
+    total.dropped_frames += part.dropped_frames
+    total.total_sleep_seconds += part.total_sleep_seconds
+
+
+def _run_source_frame_sequence(r: redis.Redis, source_id: str, frames) -> ProducerMetrics:
+    """Publish one source's frame sequence while preserving source-local order/timing."""
+    metrics = ProducerMetrics(start_time_s=time.time())
+    metrics.last_summary_log_s = metrics.start_time_s
+    metrics.discovered_frames = len(frames)
+
+    for idx, record in enumerate(frames):
+        loop_started_s = time.perf_counter()
+        metrics.attempted_frames += 1
+        image = cv2.imread(str(record.path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            metrics.read_failures += 1
+            metrics.dropped_frames += 1
+            logger.warning("Failed to read image at %s for source=%s, skipping.", record.path, source_id)
+            continue
+
+        published, reason = _publish_frame(r, record, image)
+        if not published:
+            metrics.dropped_frames += 1
+            if reason == "encode_failed":
+                metrics.encode_failures += 1
+            elif reason == "redis_set_failed":
+                metrics.redis_set_failures += 1
+            elif reason == "queue_push_failed":
+                metrics.queue_push_failures += 1
+            continue
+
+        metrics.published_frames += 1
+        _sleep_for_replay_mode(frames, idx, metrics, loop_started_s=loop_started_s)
+
+    metrics.end_time_s = time.time()
+    return metrics
+
+
+def _run_sample_file_mode_parallel_sources(r: redis.Redis) -> None:
+    """Replay sample-file frames with one producer loop per source in parallel."""
+    metrics = ProducerMetrics(start_time_s=time.time())
+    metrics.last_summary_log_s = metrics.start_time_s
+    frames_by_source = discover_frames_by_source()
+    source_count = len(frames_by_source)
+    max_workers = min(CONFIG.producer_parallel_max_workers, max(1, source_count))
+    logger.info(
+        "Starting parallel sample-file replay: sources=%d max_workers=%d",
+        source_count,
+        max_workers,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_source_frame_sequence, r, source_id, frames): source_id
+            for source_id, frames in frames_by_source.items()
+        }
+        for future in as_completed(futures):
+            source_id = futures[future]
+            try:
+                source_metrics = future.result()
+                _merge_metrics(metrics, source_metrics)
+                logger.info(
+                    (
+                        "Parallel source complete | source=%s discovered=%d attempted=%d "
+                        "processed=%d dropped=%d redis_errors=%d"
+                    ),
+                    source_id,
+                    source_metrics.discovered_frames,
+                    source_metrics.attempted_frames,
+                    source_metrics.published_frames,
+                    source_metrics.dropped_frames,
+                    _producer_redis_errors(source_metrics),
+                )
+            except Exception as exc:
+                logger.exception("Parallel source task failed for source=%s: %s", source_id, exc)
+
+    metrics.end_time_s = time.time()
+    _maybe_log_interval_summary(metrics, "sample_files_parallel", force=True)
+    _log_summary(metrics, "sample_files_parallel")
 
 
 def _run_sample_file_mode(r: redis.Redis) -> None:
@@ -433,7 +524,10 @@ def run_producer():
             r.ping()
             logger.info(f"Connected to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
             if CONFIG.producer_source_mode == "sample_files":
-                _run_sample_file_mode(r)
+                if CONFIG.producer_parallel_sources and len(CONFIG.producer_camera_dirs) > 1:
+                    _run_sample_file_mode_parallel_sources(r)
+                else:
+                    _run_sample_file_mode(r)
             elif CONFIG.producer_source_mode == "livestream":
                 _run_livestream_mode(r)
             else:

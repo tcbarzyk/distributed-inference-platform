@@ -29,6 +29,8 @@ class ServiceConfig:
     producer_frame_key_prefix: str
     producer_stream_url: str | None
     producer_stream_source_id: str | None
+    producer_parallel_sources: bool
+    producer_parallel_max_workers: int
     producer_summary_log_interval_seconds: int
     worker_summary_log_interval_seconds: int
     worker_results_mode: str
@@ -138,6 +140,12 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
     producer_frame_key_prefix = (os.getenv("PRODUCER_FRAME_KEY_PREFIX") or "frame").strip()
     producer_stream_url = os.getenv("PRODUCER_STREAM_URL") or None
     producer_stream_source_id = os.getenv("PRODUCER_STREAM_SOURCE_ID") or None
+    producer_parallel_sources = _to_bool(os.getenv("PRODUCER_PARALLEL_SOURCES"), False)
+    producer_parallel_max_workers = _to_int(
+        "PRODUCER_PARALLEL_MAX_WORKERS",
+        os.getenv("PRODUCER_PARALLEL_MAX_WORKERS"),
+        2,
+    )
     producer_summary_log_interval_seconds = _to_int(
         "PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS",
         os.getenv("PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS"),
@@ -190,6 +198,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("PRODUCER_FRAME_TTL_SECONDS must be greater than 0")
     if producer_summary_log_interval_seconds <= 0:
         raise ValueError("PRODUCER_SUMMARY_LOG_INTERVAL_SECONDS must be greater than 0")
+    if producer_parallel_max_workers <= 0:
+        raise ValueError("PRODUCER_PARALLEL_MAX_WORKERS must be greater than 0")
     if worker_summary_log_interval_seconds <= 0:
         raise ValueError("WORKER_SUMMARY_LOG_INTERVAL_SECONDS must be greater than 0")
     if worker_annotated_every_n <= 0:
@@ -218,6 +228,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         producer_frame_key_prefix=producer_frame_key_prefix,
         producer_stream_url=producer_stream_url,
         producer_stream_source_id=producer_stream_source_id,
+        producer_parallel_sources=producer_parallel_sources,
+        producer_parallel_max_workers=producer_parallel_max_workers,
         producer_summary_log_interval_seconds=producer_summary_log_interval_seconds,
         worker_summary_log_interval_seconds=worker_summary_log_interval_seconds,
         worker_results_mode=worker_results_mode,

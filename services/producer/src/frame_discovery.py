@@ -84,6 +84,29 @@ def discover_frames() -> list[FrameRecord]:
         invalid_count,
     )
     return sorted_frames
+
+
+def discover_frames_by_source() -> dict[str, list[FrameRecord]]:
+    """Discover sample-file frames grouped by source_id and sorted per source timeline."""
+    merged_frames = discover_frames()
+    grouped: dict[str, list[FrameRecord]] = {}
+    for frame in merged_frames:
+        grouped.setdefault(frame.source_id, []).append(frame)
+
+    regrouped: dict[str, list[FrameRecord]] = {}
+    for source_id, frames in grouped.items():
+        frames_sorted = sorted(frames, key=lambda f: f.capture_ts_us)
+        # Reindex frame_id per source so sequence semantics remain local to each source.
+        regrouped[source_id] = [
+            FrameRecord(
+                frame_id=index,
+                source_id=source_id,
+                capture_ts_us=record.capture_ts_us,
+                path=record.path,
+            )
+            for index, record in enumerate(frames_sorted)
+        ]
+    return regrouped
     
 
 def parse_capture_timestamp(frame_path: Path) -> int:

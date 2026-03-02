@@ -18,7 +18,9 @@ Publishes video frames into Redis for downstream worker inference.
 1. `sample_files`
 - Scans configured camera directories.
 - Parses capture timestamps from filenames.
-- Merges frames into a timestamp-sorted timeline.
+- Supports two publish strategies:
+  - merged timeline (default): one global cross-source ordered stream
+  - parallel sources: one publish loop per source (feature-flagged)
 
 2. `livestream`
 - Reads continuously from stream URL/device via OpenCV.
@@ -63,6 +65,8 @@ Producer publishes shared schema `QueueJob`:
 - `PRODUCER_FRAME_KEY_PREFIX`
 - `PRODUCER_STREAM_URL`
 - `PRODUCER_STREAM_SOURCE_ID`
+- `PRODUCER_PARALLEL_SOURCES`: `false|true` (sample-files mode only)
+- `PRODUCER_PARALLEL_MAX_WORKERS`: max parallel source loops
 
 Also requires shared Redis/logging settings.
 
@@ -84,6 +88,12 @@ docker compose up --build producer redis
 
 3. Single queue for all sources.
 - Tradeoff: straightforward now, may need partitioning for scale.
+
+4. Parallel source mode preserves order per source, not global order across all sources.
+- Tradeoff: better source throughput, but consumers must rely on `source_id` + timestamp/frame_id for correlation.
+
+5. One Redis queue is shared by all source loops (including parallel mode).
+- Tradeoff: simple deployment, but queue contention can increase with many active sources.
 
 ## Near-term Improvements
 
