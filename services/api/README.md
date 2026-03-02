@@ -27,6 +27,7 @@ This README documents:
 - Primary endpoints:
   - `GET /sources/{source_id}/latest-frame` (bootstrap/refresh)
   - `GET /sources/{source_id}/frame/latest.jpg` (latest image bytes)
+  - `GET /streams/{source_id}.mjpeg` (continuous MJPEG stream)
   - `WS /ws/sources/{source_id}` (continuous updates)
 
 3. Live metrics/events dashboard
@@ -185,7 +186,16 @@ Status tags:
   - Returns `image/jpeg` bytes when present.
   - Returns `404` when missing/expired.
 
-3. `GET /sources/{source_id}/stats` (`IMPLEMENTED`, minimal v1)
+3. `GET /streams/{source_id}.mjpeg` (`IMPLEMENTED`, minimal v1)
+- Purpose: continuous live video stream endpoint for browser `<img>` playback.
+- Frontend use: low-friction live annotated feed transport.
+- Behavior:
+  - Subscribes to Redis Pub/Sub channel `<WORKER_MJPEG_CHANNEL_PREFIX>.<source_id>`.
+  - Emits multipart JPEG frames (`multipart/x-mixed-replace`).
+  - Sends one bootstrap frame first from existing latest-frame key path when available.
+  - Closes stream after inactivity timeout based on `API_SOURCE_ACTIVE_WINDOW_SECONDS`.
+
+4. `GET /sources/{source_id}/stats` (`IMPLEMENTED`, minimal v1)
 - Purpose: current rolling metrics for dashboard cards.
 - Frontend use: live KPI cards and small trend charts.
 - Suggested fields:
@@ -233,7 +243,7 @@ Status tags:
 ## Implementation Order (Backend)
 
 1. Keep health endpoints as-is (done).
-2. Add image delivery path for `latest-frame` (`annotated_image_url` or frame stream endpoint).
+2. Add richer MJPEG controls (backpressure strategy, explicit keepalive frames, multi-client fanout optimization).
 3. Implement richer source stats (input fps, per-source queue lag, latency percentiles).
 4. Add `WS /ws/sources/{source_id}` and emit DB-backed live updates.
 5. Add source/job management write endpoints (control-plane).
@@ -298,6 +308,7 @@ docker compose up --build api redis postgres
 - `API_SOURCE_ACTIVE_WINDOW_SECONDS`:
   - Default: `10`
   - Meaning: how recent a source's latest result must be to mark `is_active=true` in `GET /sources`.
+  - Also used as MJPEG idle timeout window before stream auto-close.
 - `WORKER_LIVE_FRAME_KEY_PREFIX` / `WORKER_LIVE_META_KEY_PREFIX`:
   - Shared key prefixes used by API to locate latest live frame metadata/bytes in Redis.
 

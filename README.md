@@ -27,6 +27,7 @@ The platform currently has three application services plus infrastructure:
 - Live-frame bootstrap endpoints:
   - `GET /sources/{source_id}/latest-frame` (Redis-first, DB fallback)
   - `GET /sources/{source_id}/frame/latest.jpg` (latest JPEG bytes from Redis key)
+  - `GET /streams/{source_id}.mjpeg` (continuous MJPEG stream via Redis Pub/Sub)
 
 4. Infrastructure
 - Redis for queue + frame blob handoff.
@@ -94,6 +95,12 @@ Strict mode (fails if live frame image endpoint is not currently serving bytes):
 
 ```bash
 python scripts/smoke_api.py --require-live-frame
+```
+
+Strict MJPEG mode (also requires stream endpoint to emit bytes within timeout):
+
+```bash
+python scripts/smoke_api.py --require-live-frame --require-mjpeg-stream
 ```
 
 ## Faster Worker Dev Loop (No Rebuild for Code-Only Changes)
@@ -195,9 +202,9 @@ In progress:
 - Decision: new live-frame controls are centralized in shared config (`WORKER_LIVE_*`, `API_SOURCE_ACTIVE_WINDOW_SECONDS`).
 - Tradeoff: consistency and less duplication, but config changes can affect multiple services at once.
 
-12. Keep live image endpoint HTTP-simple (`/frame/latest.jpg`)
-- Decision: start with a straightforward latest-frame JPEG endpoint before MJPEG/WebSocket streaming.
-- Tradeoff: very easy integration and debugging, but not ideal for smooth high-FPS playback.
+12. Layered live video transport
+- Decision: keep simple latest-frame JPEG endpoint and add MJPEG stream endpoint.
+- Tradeoff: fast path to browser demo and debugging, but MJPEG is bandwidth-heavy vs WebRTC-class transports.
 
 ## Future Features for a Complete Distributed System
 
@@ -212,7 +219,8 @@ In progress:
 
 4. Live video feed
 - Bootstrap available now via `GET /sources/{source_id}/frame/latest.jpg`.
-- Next: MJPEG or WS push transport, later consider WebRTC for low latency.
+- Continuous MJPEG stream now available via `GET /streams/{source_id}.mjpeg`.
+- Next: WebSocket events + later WebRTC for lower latency/better bandwidth.
 
 4a. Realtime fanout transport
 - Implement source-scoped WebSocket events and/or MJPEG stream endpoint for continuous updates.
@@ -245,7 +253,7 @@ The frontend is planned as a live operations dashboard with these core component
 2. Live video feed
 - Show annotated live frames for selected source.
 - Current bootstrap: `GET /sources/{source_id}/latest-frame` + `/sources/{source_id}/frame/latest.jpg`.
-- Initial continuous transport target: MJPEG endpoint (to be implemented).
+- Current continuous transport: `GET /streams/{source_id}.mjpeg`.
 - Later upgrade path: WebRTC for lower latency/better bandwidth efficiency.
 
 3. Live dashboard
@@ -292,6 +300,7 @@ Use two metric layers:
 - Run stack, verify worker live-frame writes, and confirm:
   - `GET /sources/{source_id}/latest-frame`
   - `GET /sources/{source_id}/frame/latest.jpg`
+  - `GET /streams/{source_id}.mjpeg`
 
 2. Add API endpoints for frontend hydration.
 - `GET /sources` (implemented)
@@ -305,7 +314,8 @@ Use two metric layers:
 
 4. Add live annotated video endpoint.
 - `GET /sources/{source_id}/frame/latest.jpg` is implemented for bootstrap/latest frame reads.
-- Next: implement MJPEG stream endpoint per source for continuous playback.
+- `GET /streams/{source_id}.mjpeg` is implemented for continuous playback.
+- Next: optimize stream backpressure and evaluate WebRTC upgrade.
 
 5. Build frontend v1.
 - Source selector

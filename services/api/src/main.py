@@ -15,7 +15,7 @@ from typing import Any, Generator
 
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -201,6 +201,86 @@ def _get_live_frame_bytes_for_key(frame_key: str) -> bytes | None:
     if raw is None or not isinstance(raw, (bytes, bytearray)):
         return None
     return bytes(raw)
+
+
+def _mjpeg_channel_for_source(source_id: str) -> str:
+    """Build Redis Pub/Sub channel name for source MJPEG frames."""
+    return f"{CONFIG.worker_mjpeg_channel_prefix}.{source_id}"
+
+
+def _mjpeg_frame_chunk(frame_bytes: bytes, *, boundary: str = "frame") -> bytes:
+    """Build one multipart/x-mixed-replace chunk for a JPEG frame."""
+    headers = (
+        f"--{boundary}\r\n"
+        "Content-Type: image/jpeg\r\n"
+        f"Content-Length: {len(frame_bytes)}\r\n\r\n"
+    ).encode("ascii")
+    return headers + frame_bytes + b"\r\n"
+
+
+def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
+    """Yield multipart MJPEG chunks from Redis Pub/Sub with idle timeout close."""
+    boundary = "frame"
+    idle_timeout_s = max(1, int(CONFIG.api_source_active_window_seconds))
+    channel = _mjpeg_channel_for_source(source_id)
+    client: redis.Redis | None = None
+    pubsub = None
+    last_emitted_s = time.monotonic()
+
+    try:
+        # Optional bootstrap frame from existing latest-frame Redis key path.
+        live_meta = _get_live_meta_for_source(source_id)
+        if live_meta is not None:
+            frame_key = str(live_meta.get("frame_key") or _live_frame_key_for_source(source_id))
+            bootstrap = _get_live_frame_bytes_for_key(frame_key)
+            if bootstrap is not None:
+                yield _mjpeg_frame_chunk(bootstrap, boundary=boundary)
+                last_emitted_s = time.monotonic()
+
+        client = redis.Redis(
+            host=CONFIG.redis_host,
+            port=CONFIG.redis_port,
+            db=CONFIG.redis_db,
+            password=CONFIG.redis_password,
+            socket_timeout=1,
+            decode_responses=False,
+        )
+        pubsub = client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(channel)
+        logger.info(
+            "MJPEG stream subscribed source_id=%s channel=%s idle_timeout_s=%d",
+            source_id,
+            channel,
+            idle_timeout_s,
+        )
+
+        while True:
+            message = pubsub.get_message(timeout=1.0)
+            now_s = time.monotonic()
+            if message is not None and message.get("type") == "message":
+                payload = message.get("data")
+                if isinstance(payload, (bytes, bytearray)) and len(payload) > 0:
+                    yield _mjpeg_frame_chunk(bytes(payload), boundary=boundary)
+                    last_emitted_s = now_s
+                    continue
+
+            if (now_s - last_emitted_s) >= idle_timeout_s:
+                logger.info(
+                    "MJPEG stream idle timeout source_id=%s channel=%s idle_timeout_s=%d",
+                    source_id,
+                    channel,
+                    idle_timeout_s,
+                )
+                break
+    finally:
+        try:
+            if pubsub is not None:
+                pubsub.unsubscribe(channel)
+                pubsub.close()
+        finally:
+            if client is not None:
+                client.close()
+        logger.info("MJPEG stream closed source_id=%s channel=%s", source_id, channel)
 
 
 def _result_kind_from_row(row: ResultModel) -> str:
@@ -580,6 +660,32 @@ async def get_latest_frame_image(source_id: str, db: Session = Depends(get_db)) 
         )
     except SQLAlchemyError as exc:
         logger.exception("Database query failed for /sources/%s/frame/latest.jpg: %s", source_id, exc)
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+
+
+@app.get(
+    "/streams/{source_id}.mjpeg",
+    responses={200: {"content": {"multipart/x-mixed-replace": {}}}, 404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def stream_source_mjpeg(source_id: str, db: Session = Depends(get_db)) -> StreamingResponse:
+    """Stream live JPEG frames for one source using multipart MJPEG."""
+    try:
+        source_exists = (
+            db.query(SourceModel.source_id)
+            .filter(SourceModel.source_id == source_id)
+            .first()
+            is not None
+        )
+        if not source_exists:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        return StreamingResponse(
+            _iter_mjpeg_stream(source_id),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store"},
+        )
+    except SQLAlchemyError as exc:
+        logger.exception("Database query failed for /streams/%s.mjpeg: %s", source_id, exc)
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 

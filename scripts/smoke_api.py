@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import urllib.error
 import urllib.parse
@@ -35,6 +36,8 @@ def _request(url: str, timeout_s: float) -> tuple[int, dict[str, str], bytes]:
         headers = {k.lower(): v for k, v in exc.headers.items()} if exc.headers else {}
         body = exc.read() if exc.fp else b""
         return int(exc.code), headers, body
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise SmokeFailure(f"Request failed for {url}: {exc}") from exc
 
 
 def _get_json(base_url: str, path: str, timeout_s: float) -> tuple[int, dict]:
@@ -61,6 +64,11 @@ def main() -> int:
         action="store_true",
         help="Fail if /frame/latest.jpg is not available (404).",
     )
+    parser.add_argument(
+        "--require-mjpeg-stream",
+        action="store_true",
+        help="Fail if /streams/{source_id}.mjpeg does not yield frame bytes within timeout.",
+    )
     args = parser.parse_args()
 
     failures: list[str] = []
@@ -74,7 +82,15 @@ def main() -> int:
             failures.append(fail_msg)
 
     # 1) Health readiness
-    status, ready = _get_json(args.base_url, "/health/ready", args.timeout)
+    try:
+        status, ready = _get_json(args.base_url, "/health/ready", args.timeout)
+    except SmokeFailure as exc:
+        print(f"[FAIL] {exc}")
+        print(
+            "[HINT] Ensure docker services are running (api/redis/postgres) and "
+            f"the base URL is correct: {args.base_url}"
+        )
+        return 1
     check(
         status == 200 and ready.get("status") == "ok",
         "GET /health/ready returned ready=ok",
@@ -82,7 +98,11 @@ def main() -> int:
     )
 
     # 2) Sources list
-    status, sources_resp = _get_json(args.base_url, "/sources?limit=5", args.timeout)
+    try:
+        status, sources_resp = _get_json(args.base_url, "/sources?limit=5", args.timeout)
+    except SmokeFailure as exc:
+        print(f"[FAIL] {exc}")
+        return 1
     items = sources_resp.get("items") if isinstance(sources_resp, dict) else None
     source_id = items[0].get("source_id") if isinstance(items, list) and items else None
     check(
@@ -98,7 +118,13 @@ def main() -> int:
 
     # 3) Latest frame metadata
     latest_path = f"/sources/{quoted_source}/latest-frame"
-    status, latest_resp = _get_json(args.base_url, latest_path, args.timeout)
+    try:
+        status, latest_resp = _get_json(args.base_url, latest_path, args.timeout)
+    except SmokeFailure as exc:
+        print(f"[FAIL] {exc}")
+        failures.append(str(exc))
+        latest_resp = {}
+        status = 0
     check(
         status == 200 and isinstance(latest_resp, dict),
         f"GET {latest_path} returned metadata",
@@ -107,16 +133,25 @@ def main() -> int:
 
     # 4) Latest frame image
     image_path = f"/sources/{quoted_source}/frame/latest.jpg"
-    status, headers, body = _get_bytes(args.base_url, image_path, args.timeout)
-    content_type = headers.get("content-type", "")
-    if status == 200:
-        check(
-            content_type.startswith("image/jpeg") and len(body) > 0,
-            f"GET {image_path} returned JPEG bytes",
-            f"GET {image_path} expected JPEG but got content_type={content_type} bytes={len(body)}",
-        )
-    else:
-        msg = f"GET {image_path} returned status={status} (live frame may be unavailable/expired)"
+    try:
+        status, headers, body = _get_bytes(args.base_url, image_path, args.timeout)
+        content_type = headers.get("content-type", "")
+        if status == 200:
+            check(
+                content_type.startswith("image/jpeg") and len(body) > 0,
+                f"GET {image_path} returned JPEG bytes",
+                f"GET {image_path} expected JPEG but got content_type={content_type} bytes={len(body)}",
+            )
+        else:
+            msg = f"GET {image_path} returned status={status} (live frame may be unavailable/expired)"
+            if args.require_live_frame:
+                print(f"[FAIL] {msg}")
+                failures.append(msg)
+            else:
+                print(f"[WARN] {msg}")
+                warnings.append(msg)
+    except SmokeFailure as exc:
+        msg = str(exc)
         if args.require_live_frame:
             print(f"[FAIL] {msg}")
             failures.append(msg)
@@ -124,8 +159,52 @@ def main() -> int:
             print(f"[WARN] {msg}")
             warnings.append(msg)
 
+    # 4b) MJPEG stream endpoint
+    mjpeg_path = f"/streams/{quoted_source}.mjpeg"
+    mjpeg_url = f"{args.base_url.rstrip('/')}{mjpeg_path}"
+    try:
+        req = urllib.request.Request(url=mjpeg_url, method="GET")
+        with urllib.request.urlopen(req, timeout=args.timeout) as resp:
+            status = int(resp.getcode())
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            is_mjpeg = content_type.startswith("multipart/x-mixed-replace")
+            if not (status == 200 and is_mjpeg):
+                msg = f"GET {mjpeg_path} expected multipart MJPEG; status={status} content_type={content_type}"
+                print(f"[FAIL] {msg}")
+                failures.append(msg)
+            else:
+                print(f"[PASS] GET {mjpeg_path} returned multipart MJPEG headers")
+                if args.require_mjpeg_stream:
+                    sample = resp.read(64)
+                    if len(sample) > 0:
+                        print(f"[PASS] GET {mjpeg_path} produced MJPEG stream bytes")
+                    else:
+                        msg = f"GET {mjpeg_path} returned headers but no stream bytes"
+                        print(f"[FAIL] {msg}")
+                        failures.append(msg)
+                else:
+                    print(f"[INFO] GET {mjpeg_path} stream-byte check skipped (use --require-mjpeg-stream)")
+    except urllib.error.HTTPError as exc:
+        msg = f"GET {mjpeg_path} returned HTTP {exc.code}"
+        print(f"[FAIL] {msg}")
+        failures.append(msg)
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        msg = f"GET {mjpeg_path} request failed: {exc}"
+        if args.require_mjpeg_stream:
+            print(f"[FAIL] {msg}")
+            failures.append(msg)
+        else:
+            print(f"[WARN] {msg}")
+            warnings.append(msg)
+
     # 5) Results pagination / no duplicate ids across pages
-    status, page1 = _get_json(args.base_url, "/results?limit=5", args.timeout)
+    try:
+        status, page1 = _get_json(args.base_url, "/results?limit=5", args.timeout)
+    except SmokeFailure as exc:
+        print(f"[FAIL] {exc}")
+        failures.append(str(exc))
+        status = 0
+        page1 = {}
     page1_items = page1.get("items") if isinstance(page1, dict) else None
     check(
         status == 200 and isinstance(page1_items, list),

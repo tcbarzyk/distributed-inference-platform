@@ -56,6 +56,17 @@ When enabled, worker writes the latest annotated JPEG and metadata per source to
 
 This path is intended for live bootstrap/display and is not a durable storage system.
 
+## MJPEG Pub/Sub (Worker Side)
+
+When enabled, worker also publishes JPEG bytes to Redis Pub/Sub channels for
+continuous streaming consumers:
+
+- Toggle: `WORKER_MJPEG_PUBLISH_ENABLED`
+- Per-source cap: `WORKER_MJPEG_MAX_FPS`
+- Channel format: `<WORKER_MJPEG_CHANNEL_PREFIX>.<source_id>`
+
+This is realtime fanout (ephemeral, best-effort), not a durable queue.
+
 ## Key Files
 
 - `src/main.py`: consume loop/orchestration/metrics
@@ -77,6 +88,9 @@ This path is intended for live bootstrap/display and is not a durable storage sy
 - `WORKER_LIVE_META_KEY_PREFIX`
 - `WORKER_LIVE_FRAME_TTL_SECONDS`
 - `WORKER_LIVE_FRAMES_JPEG_QUALITY`
+- `WORKER_MJPEG_PUBLISH_ENABLED`
+- `WORKER_MJPEG_MAX_FPS`
+- `WORKER_MJPEG_CHANNEL_PREFIX`
 - `WORKER_MODEL_DEVICE`
 - `WORKER_SUMMARY_LOG_INTERVAL_SECONDS`
 
@@ -143,5 +157,5 @@ Rebuild is still required when changing:
 ## Near-term Improvements
 
 1. Add robust retry/idempotency policy for DB write failures.
-2. Emit realtime Pub/Sub events for API WebSocket fanout.
+2. Add source-scoped WebSocket event publish path for non-image live metrics/events.
 3. Add richer job lifecycle transitions (`queued|processing|done|failed`).

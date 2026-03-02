@@ -44,6 +44,9 @@ class ServiceConfig:
     worker_live_meta_key_prefix: str
     worker_live_frame_ttl_seconds: int
     worker_live_frames_jpeg_quality: int
+    worker_mjpeg_publish_enabled: bool
+    worker_mjpeg_max_fps: int
+    worker_mjpeg_channel_prefix: str
     api_source_active_window_seconds: int
 
 
@@ -204,6 +207,13 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         os.getenv("WORKER_LIVE_FRAMES_JPEG_QUALITY"),
         80,
     )
+    worker_mjpeg_publish_enabled = _to_bool(os.getenv("WORKER_MJPEG_PUBLISH_ENABLED"), False)
+    worker_mjpeg_max_fps = _to_int(
+        "WORKER_MJPEG_MAX_FPS",
+        os.getenv("WORKER_MJPEG_MAX_FPS"),
+        10,
+    )
+    worker_mjpeg_channel_prefix = (os.getenv("WORKER_MJPEG_CHANNEL_PREFIX") or "live.frames").strip()
     api_source_active_window_seconds = _to_int(
         "API_SOURCE_ACTIVE_WINDOW_SECONDS",
         os.getenv("API_SOURCE_ACTIVE_WINDOW_SECONDS"),
@@ -240,6 +250,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("WORKER_LIVE_FRAME_TTL_SECONDS must be greater than 0")
     if worker_live_frames_jpeg_quality < 1 or worker_live_frames_jpeg_quality > 100:
         raise ValueError("WORKER_LIVE_FRAMES_JPEG_QUALITY must be between 1 and 100")
+    if worker_mjpeg_max_fps <= 0:
+        raise ValueError("WORKER_MJPEG_MAX_FPS must be greater than 0")
     if producer_frame_key_prefix == "":
         raise ValueError("PRODUCER_FRAME_KEY_PREFIX cannot be empty")
     if producer_file_glob == "":
@@ -248,6 +260,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("WORKER_LIVE_FRAME_KEY_PREFIX cannot be empty")
     if worker_live_meta_key_prefix == "":
         raise ValueError("WORKER_LIVE_META_KEY_PREFIX cannot be empty")
+    if worker_mjpeg_channel_prefix == "":
+        raise ValueError("WORKER_MJPEG_CHANNEL_PREFIX cannot be empty")
     if api_source_active_window_seconds <= 0:
         raise ValueError("API_SOURCE_ACTIVE_WINDOW_SECONDS must be greater than 0")
 
@@ -285,5 +299,8 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         worker_live_meta_key_prefix=worker_live_meta_key_prefix,
         worker_live_frame_ttl_seconds=worker_live_frame_ttl_seconds,
         worker_live_frames_jpeg_quality=worker_live_frames_jpeg_quality,
+        worker_mjpeg_publish_enabled=worker_mjpeg_publish_enabled,
+        worker_mjpeg_max_fps=worker_mjpeg_max_fps,
+        worker_mjpeg_channel_prefix=worker_mjpeg_channel_prefix,
         api_source_active_window_seconds=api_source_active_window_seconds,
     )

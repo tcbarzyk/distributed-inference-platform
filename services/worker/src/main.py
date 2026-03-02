@@ -45,6 +45,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("Worker")
+_LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
 
 
 @dataclass
@@ -65,6 +66,10 @@ class WorkerMetrics:
     live_frame_encode_failures: int = 0
     live_frame_write_failures: int = 0
     live_frame_written: int = 0
+    mjpeg_publish_attempted: int = 0
+    mjpeg_publish_sent: int = 0
+    mjpeg_publish_skipped_rate_limit: int = 0
+    mjpeg_publish_errors: int = 0
     processed_ok: int = 0
     deleted_blobs: int = 0
     queue_latency_samples: int = 0
@@ -115,6 +120,7 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
             "Summary interval | service=worker elapsed_s=%.1f popped=%d processed=%d invalid=%d "
             "blob_misses=%d decode_failures=%d inference_failures=%d publish_failures=%d redis_errors=%d "
             "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
+            "mjpeg_attempted=%d mjpeg_sent=%d mjpeg_skipped_rate_limit=%d mjpeg_errors=%d "
             "avg_queue_ms=%.2f throughput_fps=%.2f"
         ),
         elapsed,
@@ -131,6 +137,10 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         metrics.live_frame_skipped,
         metrics.live_frame_encode_failures,
         metrics.live_frame_write_failures,
+        metrics.mjpeg_publish_attempted,
+        metrics.mjpeg_publish_sent,
+        metrics.mjpeg_publish_skipped_rate_limit,
+        metrics.mjpeg_publish_errors,
         avg_queue_ms,
         throughput,
     )
@@ -148,6 +158,7 @@ def _log_summary(metrics: WorkerMetrics) -> None:
             "invalid=%d missing_frame_key=%d blob_misses=%d decode_failures=%d "
             "inference_failures=%d publish_failures=%d redis_errors=%d deleted_blobs=%d avg_queue_ms=%.2f "
             "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
+            "mjpeg_attempted=%d mjpeg_sent=%d mjpeg_skipped_rate_limit=%d mjpeg_errors=%d "
             "throughput_fps=%.2f"
         ),
         elapsed,
@@ -168,6 +179,10 @@ def _log_summary(metrics: WorkerMetrics) -> None:
         metrics.live_frame_skipped,
         metrics.live_frame_encode_failures,
         metrics.live_frame_write_failures,
+        metrics.mjpeg_publish_attempted,
+        metrics.mjpeg_publish_sent,
+        metrics.mjpeg_publish_skipped_rate_limit,
+        metrics.mjpeg_publish_errors,
         throughput,
     )
 
@@ -306,6 +321,22 @@ def _publish_result_safe(
         logger.exception("Result publish failed for frame_id=%s: %s", inference_result.frame_id, exc)
 
 
+def _mjpeg_channel_for_source(source_id: str) -> str:
+    return f"{CONFIG.worker_mjpeg_channel_prefix}.{source_id}"
+
+
+def _should_publish_mjpeg_for_source(source_id: str) -> bool:
+    if not CONFIG.worker_mjpeg_publish_enabled:
+        return False
+    min_interval_s = 1.0 / float(CONFIG.worker_mjpeg_max_fps)
+    now_s = time.time()
+    last_s = _LAST_MJPEG_PUBLISH_BY_SOURCE.get(source_id)
+    if last_s is not None and (now_s - last_s) < min_interval_s:
+        return False
+    _LAST_MJPEG_PUBLISH_BY_SOURCE[source_id] = now_s
+    return True
+
+
 def _delete_frame_key(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
     """Best-effort cleanup of frame blob after processing."""
     try:
@@ -348,6 +379,12 @@ def run_worker():
             CONFIG.worker_live_frames_jpeg_quality,
             CONFIG.worker_live_frame_key_prefix,
             CONFIG.worker_live_meta_key_prefix,
+        )
+        logger.info(
+            "MJPEG PubSub settings | enabled=%s max_fps=%d channel_prefix=%s",
+            CONFIG.worker_mjpeg_publish_enabled,
+            CONFIG.worker_mjpeg_max_fps,
+            CONFIG.worker_mjpeg_channel_prefix,
         )
 
         try:
@@ -491,6 +528,31 @@ def _publish_live_frame_safe(
             len(jpeg_bytes),
             ttl,
         )
+        metrics.mjpeg_publish_attempted += 1
+        if _should_publish_mjpeg_for_source(inference_result.source_id):
+            try:
+                sent = r.publish(_mjpeg_channel_for_source(inference_result.source_id), jpeg_bytes)
+                metrics.mjpeg_publish_sent += 1
+                logger.debug(
+                    "MJPEG frame published source_id=%s frame_id=%s channel=%s subscribers=%d bytes=%d",
+                    inference_result.source_id,
+                    inference_result.frame_id,
+                    _mjpeg_channel_for_source(inference_result.source_id),
+                    sent,
+                    len(jpeg_bytes),
+                )
+            except redis.RedisError as exc:
+                metrics.redis_errors += 1
+                metrics.mjpeg_publish_errors += 1
+                logger.warning(
+                    "MJPEG publish failed source=%s frame_id=%s channel=%s: %s",
+                    inference_result.source_id,
+                    inference_result.frame_id,
+                    _mjpeg_channel_for_source(inference_result.source_id),
+                    exc,
+                )
+        else:
+            metrics.mjpeg_publish_skipped_rate_limit += 1
     except redis.RedisError as exc:
         metrics.redis_errors += 1
         metrics.live_frame_write_failures += 1
