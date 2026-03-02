@@ -82,6 +82,20 @@ Common endpoints:
 - Results: `http://localhost:8000/results`
 - Sources: `http://localhost:8000/sources`
 
+## API Smoke Test
+
+Run a quick frontend-readiness smoke test:
+
+```bash
+python scripts/smoke_api.py
+```
+
+Strict mode (fails if live frame image endpoint is not currently serving bytes):
+
+```bash
+python scripts/smoke_api.py --require-live-frame
+```
+
 ## Faster Worker Dev Loop (No Rebuild for Code-Only Changes)
 
 A `worker-dev` service is defined in `docker-compose.override.yml` under profile `dev`.
@@ -165,6 +179,26 @@ In progress:
 7. Optional producer parallel-source mode
 - Tradeoff: increases per-source throughput and realism, but removes global cross-source ordering guarantees.
 
+8. Redis as live-frame transport/cache (not DB blob storage)
+- Decision: worker writes latest annotated JPEG + metadata to Redis keys per source.
+- Tradeoff: low-latency bootstrap and simple API integration, but frames are ephemeral and can expire between reads.
+
+9. API `latest-frame` is Redis-first with DB fallback
+- Decision: API checks live Redis metadata first, then falls back to latest DB result metadata.
+- Tradeoff: better user experience when live data exists, but mixed data freshness semantics require clear frontend handling.
+
+10. Keyset pagination for result/event reads
+- Decision: `/results` and `/sources/{source_id}/events` use cursor-based keyset pagination.
+- Tradeoff: stable and scalable under writes, but no random "jump to page N" behavior.
+
+11. Shared config across services
+- Decision: new live-frame controls are centralized in shared config (`WORKER_LIVE_*`, `API_SOURCE_ACTIVE_WINDOW_SECONDS`).
+- Tradeoff: consistency and less duplication, but config changes can affect multiple services at once.
+
+12. Keep live image endpoint HTTP-simple (`/frame/latest.jpg`)
+- Decision: start with a straightforward latest-frame JPEG endpoint before MJPEG/WebSocket streaming.
+- Tradeoff: very easy integration and debugging, but not ideal for smooth high-FPS playback.
+
 ## Future Features for a Complete Distributed System
 
 1. Reliable delivery semantics
@@ -179,6 +213,9 @@ In progress:
 4. Live video feed
 - Bootstrap available now via `GET /sources/{source_id}/frame/latest.jpg`.
 - Next: MJPEG or WS push transport, later consider WebRTC for low latency.
+
+4a. Realtime fanout transport
+- Implement source-scoped WebSocket events and/or MJPEG stream endpoint for continuous updates.
 
 5. Backpressure and flow control
 - Adaptive producer throttling and queue depth controls.
@@ -251,8 +288,10 @@ Use two metric layers:
 
 ## Next Steps (Execution Order)
 
-1. Validate worker PostgreSQL write path end-to-end.
-- Run stack, verify inserts into `sources`, `jobs`, `results`.
+1. Validate end-to-end live-frame bootstrap path.
+- Run stack, verify worker live-frame writes, and confirm:
+  - `GET /sources/{source_id}/latest-frame`
+  - `GET /sources/{source_id}/frame/latest.jpg`
 
 2. Add API endpoints for frontend hydration.
 - `GET /sources` (implemented)
@@ -261,7 +300,7 @@ Use two metric layers:
 - `GET /sources/{source_id}/events` (implemented)
 
 3. Add realtime result stream.
-- Worker publishes post-commit result events.
+- Worker publishes post-commit result events (Redis Pub/Sub or equivalent).
 - API exposes `WS /ws/sources/{source_id}` and fanout to clients.
 
 4. Add live annotated video endpoint.
