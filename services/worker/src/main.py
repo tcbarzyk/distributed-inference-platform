@@ -36,6 +36,8 @@ from results import publish_result
 CONFIG = load_service_config(caller_file=__file__)
 SCHEMA_VERSION = 1
 
+
+
 logging.basicConfig(
     level=CONFIG.log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

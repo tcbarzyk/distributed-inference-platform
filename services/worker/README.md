@@ -1,95 +1,117 @@
 # Worker Service
 
-The worker consumes frame jobs from a Redis queue, runs YOLOv8 object detection on each frame, and publishes structured results.
+Consumes queued frame jobs, runs YOLO inference, and publishes structured results.
 
-## How It Works
+## Responsibilities
 
-1. **Load configuration** from environment variables (via `.env` or Docker Compose).
-2. **Connect to Redis** and **preload the YOLOv8n model** to avoid first-frame latency.
-3. **Block-pop jobs** from the Redis queue (`BRPOP`).
-4. **For each job:**
-   - Parse the JSON metadata (frame ID, source ID, frame key, timestamps).
-   - `GET` the JPEG-encoded frame bytes from Redis.
-   - Decode the image and compute queue/source latency.
-   - **Preprocess** → resize to 640×640, convert grayscale/BGRA to BGR.
-   - **Infer** → run YOLOv8n forward pass.
-   - **Postprocess** → extract bounding boxes, class labels, and confidence scores.
-   - **Publish results** → append a JSON line to a daily results file; optionally save an annotated image with drawn bounding boxes.
-   - **Delete** the frame blob from Redis to free memory.
-5. **Log periodic and final run summaries** (throughput, latency, error counts).
+1. Load shared configuration.
+2. Connect to Redis queue and preload model.
+3. Decode `QueueJob` payloads.
+4. Fetch frame bytes from Redis and decode to image.
+5. Run preprocessing + inference + detection postprocessing.
+6. Publish `InferenceResult` via configured results mode.
+7. Delete frame blob from Redis after processing.
+8. Emit periodic/final metrics logs.
 
-## Source Layout
+## Processing Pipeline
 
-```
-services/worker/
-├── src/
-│   ├── main.py         # Entry point — job loop, decode, orchestration
-│   ├── inference.py    # Model loading, preprocessing, YOLOv8 inference, postprocessing
-│   └── results.py      # JSONL result writing and annotated image saving
-├── output/             # Default results directory (mounted as a volume in Docker)
-│   ├── results-YYYYMMDD.jsonl
-│   └── annotated/      # Optional annotated frame images
-├── yolov8n.pt          # Pretrained model weights
-├── Dockerfile
-└── requirements.txt
-```
+1. `BRPOP` queue item.
+2. Parse `QueueJob` using shared schema helpers.
+3. `GET` frame blob by `frame_key`.
+4. Decode image with OpenCV.
+5. Run YOLO model.
+6. Build shared `InferenceResult`.
+7. Publish result:
+- `local_jsonl` (implemented)
+- `postgres` (implemented)
 
-## Result Format
+## Results Modes
 
-Each processed frame appends one JSON line to `output/results-YYYYMMDD.jsonl`:
+1. `local_jsonl`
+- Appends one JSON object per line to daily file in `services/worker/output`.
+- Optional annotated image snapshots.
 
-```json
-{
-  "processed_at_us": 1740000000000000,
-  "frame_id": 42,
-  "source_id": "KAB_SK_1_undist",
-  "status": "ok",
-  "model": "yolov8n.pt",
-  "inference_ms": 12.34,
-  "pipeline_ms": 18.56,
-  "detections": [
-    {
-      "label": "car",
-      "class_id": 2,
-      "confidence": 0.91,
-      "bbox_xyxy": [120.5, 80.0, 340.25, 260.75]
-    }
-  ]
-}
-```
+2. `postgres`
+- Intended to persist to shared DB tables:
+  - `sources`
+  - `jobs`
+  - `results`
+- Implemented with transactional source/job upsert + result insert.
 
-## Configuration
+## Key Files
 
-All settings are loaded by `platform_shared.config`. Required variables are marked with **\***.
+- `src/main.py`: consume loop/orchestration/metrics
+- `src/inference.py`: model load and inference functions
+- `src/results.py`: result publishing logic
+- `src/db.py`: worker DB engine/session setup
+- `Dockerfile`
+- `requirements.txt`
 
-| Variable | Default | Description |
-|---|---|---|
-| `REDIS_HOST` **\*** | — | Redis hostname |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_DB` | `0` | Redis database index |
-| `REDIS_PASSWORD` | `None` | Redis password (optional) |
-| `QUEUE_NAME` **\*** | — | Redis list used as the job queue |
-| `LOG_LEVEL` | `INFO` | Python logging level |
-| `WORKER_RESULTS_MODE` | `local_jsonl` | Output mode (currently only `local_jsonl`) |
-| `WORKER_RESULTS_DIR` | `services/worker/output` | Directory for result files |
-| `WORKER_SAVE_ANNOTATED` | `false` | Save images with drawn bounding boxes |
-| `WORKER_ANNOTATED_EVERY_N` | `30` | Save an annotated image every N frames |
-| `WORKER_SUMMARY_LOG_INTERVAL_SECONDS` | `30` | Seconds between periodic summary logs |
+## Configuration (Worker-specific)
 
-## Running
+- `WORKER_RESULTS_MODE`: `local_jsonl|postgres`
+- `WORKER_RESULTS_DIR`
+- `WORKER_SAVE_ANNOTATED`
+- `WORKER_ANNOTATED_EVERY_N`
+- `WORKER_MODEL_DEVICE`
+- `WORKER_SUMMARY_LOG_INTERVAL_SECONDS`
 
-### Locally (with a virtual environment)
+Plus shared Redis and Postgres settings.
+
+## Run
+
+From project root:
 
 ```bash
-pip install -r requirements.txt
-pip install -e ../../libs/platform_shared
-python src/main.py
+docker compose up --build worker redis
 ```
 
-### With Docker Compose (from the `platform/` root)
+## Fast Dev Mode
+
+For faster iteration, use `worker-dev` (profile `dev`) from
+`docker-compose.override.yml`.
+
+It bind-mounts:
+
+- `services/worker/src`
+- `libs/platform_shared/src`
+
+So source changes do not require rebuilding the worker image.
+
+Start:
 
 ```bash
-docker compose up --build worker
+docker compose --profile dev up -d worker-dev redis postgres
 ```
 
-The output directory is mounted as a volume so results persist on the host. The Ultralytics model cache is also mounted to avoid re-downloading weights on each container restart.
+After code edits:
+
+```bash
+docker compose restart worker-dev
+```
+
+Rebuild is still required when changing:
+
+- `services/worker/requirements.txt`
+- `services/worker/Dockerfile`
+- base system package dependencies
+
+## Current Tradeoffs
+
+1. Single-process worker loop.
+- Tradeoff: easy to reason about; lower throughput than parallel/batched workers.
+
+2. Per-frame synchronous inference path.
+- Tradeoff: simple correctness, less efficient at high volume.
+
+3. Redis frame blob cleanup after publish step.
+- Tradeoff: reduces memory use, but retry/recovery semantics need explicit policy.
+
+4. Dual output modes (`jsonl`, `postgres`) during transition.
+- Tradeoff: safer migration path, temporary complexity increase.
+
+## Near-term Improvements
+
+1. Add robust retry/idempotency policy for DB write failures.
+2. Emit realtime result events for API WebSocket broadcasting.
+3. Add richer job lifecycle transitions (`queued|processing|done|failed`).

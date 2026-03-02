@@ -52,6 +52,7 @@ services:
       REDIS_HOST: redis
     depends_on:
       - redis
+      - postgres
     volumes:
       - ./services/worker/output:/app/services/worker/output
       - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics

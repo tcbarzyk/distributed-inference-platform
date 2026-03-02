@@ -1,0 +1,22 @@
+services:
+  worker-dev:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./services/worker/src:/app/services/worker/src
+      - ./libs/platform_shared/src:/app/libs/platform_shared/src
+      - ./services/worker/output:/app/services/worker/output
+      - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics
+    command: ["python", "services/worker/src/main.py"]
+    restart: unless-stopped
+    gpus: all
+    profiles:
+      - dev

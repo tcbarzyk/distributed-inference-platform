@@ -11,7 +11,7 @@
     "**/__pycache__",
     "**/.venv",
     "**/venv",
-    "**/alembic",
+    "**/alembic/versions",
     "**/sample-video"
   ]
 }
