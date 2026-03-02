@@ -149,10 +149,10 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         30,
     )
     worker_results_mode = _to_choice(
-        "WORKER_RESULTS_MODE",
-        os.getenv("WORKER_RESULTS_MODE"),
-        "local_jsonl",
-        {"local_jsonl"},
+      "WORKER_RESULTS_MODE",
+      os.getenv("WORKER_RESULTS_MODE"),
+      "local_jsonl",
+      {"local_jsonl", "postgres"},
     )
     worker_results_dir_raw = (os.getenv("WORKER_RESULTS_DIR") or "services/worker/output").strip()
     worker_results_dir_path = Path(worker_results_dir_raw)

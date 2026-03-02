@@ -19,9 +19,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from platform_shared.config import load_service_config
+from platform_shared.models import ResultModel
 
 from .db import SessionLocal
-from .models import ResultModel
 
 app = FastAPI(title="Distributed Inference Platform API", version="0.1.0")
 CONFIG = load_service_config(caller_file=__file__)

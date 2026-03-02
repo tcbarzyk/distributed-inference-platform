@@ -21,8 +21,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # Import metadata source and model declarations.
-from services.api.src.db import Base, build_db_url  # noqa: E402
-import services.api.src.models  # noqa: F401,E402
+from platform_shared.db_base import Base # noqa: F401,E402 - load Base to register metadata
+from platform_shared.db_utils import build_db_url  # noqa: E402
+import platform_shared.models as models  # noqa: F401,E402 - load all models to register metadata
 
 config = context.config
 

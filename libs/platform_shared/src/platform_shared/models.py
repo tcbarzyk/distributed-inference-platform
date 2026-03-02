@@ -1,4 +1,4 @@
-"""API database ORM models.
+"""database ORM models.
 
 Design notes:
 - `id` columns are internal surrogate PKs for DB joins/performance.
@@ -13,7 +13,7 @@ from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, JSON, S
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from .db import Base
+from .db_base import Base
 
 class SourceModel(Base):
     __tablename__ = "sources"
