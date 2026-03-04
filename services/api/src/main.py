@@ -56,7 +56,11 @@ _redis_pool = redis.ConnectionPool(
 
 
 def _redis_client() -> redis.Redis:
-    """Return a Redis client that shares the module-level connection pool."""
+    """Return a Redis client that shares the module-level connection pool.
+
+    Connections are returned to the pool after each command; callers should avoid
+    calling `.close()` on the client to keep the pool warm.
+    """
     return redis.Redis(connection_pool=_redis_pool)
 
 
