@@ -46,6 +46,18 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("API")
+_redis_pool = redis.ConnectionPool(
+    host=CONFIG.redis_host,
+    port=CONFIG.redis_port,
+    db=CONFIG.redis_db,
+    password=CONFIG.redis_password,
+    socket_timeout=1,
+)
+
+
+def _redis_client() -> redis.Redis:
+    """Return a Redis client that shares the module-level connection pool."""
+    return redis.Redis(connection_pool=_redis_pool)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -150,15 +162,8 @@ def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
     """
     meta_key = _live_meta_key_for_source(source_id)
     try:
-        with redis.Redis(
-            host=CONFIG.redis_host,
-            port=CONFIG.redis_port,
-            db=CONFIG.redis_db,
-            password=CONFIG.redis_password,
-            socket_timeout=1,
-            decode_responses=True,
-        ) as r:
-            raw = r.get(meta_key)
+        client = _redis_client()
+        raw = client.get(meta_key)
     except redis.RedisError as exc:
         logger.warning("Redis live-meta read failed for key=%s: %s", meta_key, exc)
         return None
@@ -166,8 +171,20 @@ def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
     if not raw:
         return None
 
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            logger.warning("Invalid live-meta encoding for key=%s: %s", meta_key, exc)
+            return None
+    elif isinstance(raw, str):
+        decoded = raw
+    else:
+        logger.warning("Invalid live-meta payload type for key=%s", meta_key)
+        return None
+
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(decoded)
     except json.JSONDecodeError as exc:
         logger.warning("Invalid live-meta JSON for key=%s: %s", meta_key, exc)
         return None
@@ -185,15 +202,8 @@ def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
 def _get_live_frame_bytes_for_key(frame_key: str) -> bytes | None:
     """Fetch latest live-frame bytes from Redis by frame key."""
     try:
-        with redis.Redis(
-            host=CONFIG.redis_host,
-            port=CONFIG.redis_port,
-            db=CONFIG.redis_db,
-            password=CONFIG.redis_password,
-            socket_timeout=1,
-            decode_responses=False,
-        ) as r:
-            raw = r.get(frame_key)
+        client = _redis_client()
+        raw = client.get(frame_key)
     except redis.RedisError as exc:
         logger.warning("Redis live-frame read failed for key=%s: %s", frame_key, exc)
         return None
@@ -237,14 +247,7 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
                 yield _mjpeg_frame_chunk(bootstrap, boundary=boundary)
                 last_emitted_s = time.monotonic()
 
-        client = redis.Redis(
-            host=CONFIG.redis_host,
-            port=CONFIG.redis_port,
-            db=CONFIG.redis_db,
-            password=CONFIG.redis_password,
-            socket_timeout=1,
-            decode_responses=False,
-        )
+        client = _redis_client()
         pubsub = client.pubsub(ignore_subscribe_messages=True)
         pubsub.subscribe(channel)
         logger.info(
@@ -273,13 +276,9 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
                 )
                 break
     finally:
-        try:
-            if pubsub is not None:
-                pubsub.unsubscribe(channel)
-                pubsub.close()
-        finally:
-            if client is not None:
-                client.close()
+        if pubsub is not None:
+            pubsub.unsubscribe(channel)
+            pubsub.close()
         logger.info("MJPEG stream closed source_id=%s channel=%s", source_id, channel)
 
 
@@ -361,20 +360,12 @@ async def root() -> RootResponse:
 
 def _check_redis() -> tuple[bool, str]:
     """Return `(ok, detail)` for Redis dependency readiness."""
-    client = redis.Redis(
-        host=CONFIG.redis_host,
-        port=CONFIG.redis_port,
-        db=CONFIG.redis_db,
-        password=CONFIG.redis_password,
-        socket_timeout=1,
-    )
+    client = _redis_client()
     try:
         client.ping()
     except redis.RedisError as exc:
         logger.warning("Redis readiness check failed: %s", exc)
         return False, str(exc)
-    finally:
-        client.close()
     logger.debug("Redis readiness check passed.")
     return True, "ok"
 
@@ -740,14 +731,8 @@ async def get_source_stats(source_id: str, db: Session = Depends(get_db)) -> Sou
 
         queue_depth: int | None = None
         try:
-            with redis.Redis(
-                host=CONFIG.redis_host,
-                port=CONFIG.redis_port,
-                db=CONFIG.redis_db,
-                password=CONFIG.redis_password,
-                socket_timeout=1,
-            ) as r:
-                queue_depth = int(r.llen(CONFIG.queue_name))
+            client = _redis_client()
+            queue_depth = int(client.llen(CONFIG.queue_name))
         except redis.RedisError:
             queue_depth = None
 
