@@ -10,11 +10,11 @@ Current responsibilities:
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any, Generator
+from uuid import uuid4
 
 import redis
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,6 +23,7 @@ import time
 
 from platform_shared.config import load_service_config
 from platform_shared.models import ResultModel, SourceModel
+from platform_shared.observability.logging import get_logger, init_json_logging
 
 from .contracts import (
     ErrorResponse,
@@ -40,12 +41,47 @@ from .db import SessionLocal
 
 app = FastAPI(title="Distributed Inference Platform API", version="0.1.0")
 CONFIG = load_service_config(caller_file=__file__)
-logging.basicConfig(
-    level=CONFIG.log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("API")
+init_json_logging(service_name="api", log_level=CONFIG.log_level)
+logger = get_logger("API")
+
+
+def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event}
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid4())
+    started = time.perf_counter()
+    response = None
+    error: Exception | None = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        status_code = response.status_code if response is not None else 500
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "HTTP request completed",
+            extra=_log_extra(
+                "api.request.completed",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                status_code=status_code,
+                duration_ms=round(elapsed_ms, 3),
+                error_type=type(error).__name__ if error is not None else None,
+            ),
+        )
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -160,7 +196,12 @@ def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
         ) as r:
             raw = r.get(meta_key)
     except redis.RedisError as exc:
-        logger.warning("Redis live-meta read failed for key=%s: %s", meta_key, exc)
+        logger.warning(
+            "Redis live-meta read failed for key=%s: %s",
+            meta_key,
+            exc,
+            extra=_log_extra("api.redis.live_meta_read_failed", meta_key=meta_key),
+        )
         return None
 
     if not raw:
@@ -169,11 +210,20 @@ def _get_live_meta_for_source(source_id: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        logger.warning("Invalid live-meta JSON for key=%s: %s", meta_key, exc)
+        logger.warning(
+            "Invalid live-meta JSON for key=%s: %s",
+            meta_key,
+            exc,
+            extra=_log_extra("api.redis.live_meta_invalid_json", meta_key=meta_key),
+        )
         return None
 
     if not isinstance(parsed, dict):
-        logger.warning("Invalid live-meta payload type for key=%s", meta_key)
+        logger.warning(
+            "Invalid live-meta payload type for key=%s",
+            meta_key,
+            extra=_log_extra("api.redis.live_meta_invalid_type", meta_key=meta_key),
+        )
         return None
 
     # Ensure frame_key exists for downstream image fetch paths.
@@ -195,7 +245,12 @@ def _get_live_frame_bytes_for_key(frame_key: str) -> bytes | None:
         ) as r:
             raw = r.get(frame_key)
     except redis.RedisError as exc:
-        logger.warning("Redis live-frame read failed for key=%s: %s", frame_key, exc)
+        logger.warning(
+            "Redis live-frame read failed for key=%s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra("api.redis.live_frame_read_failed", frame_key=frame_key),
+        )
         return None
 
     if raw is None or not isinstance(raw, (bytes, bytearray)):
@@ -252,6 +307,7 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
             source_id,
             channel,
             idle_timeout_s,
+            extra=_log_extra("api.mjpeg.subscribed", source_id=source_id, channel=channel),
         )
 
         while True:
@@ -270,6 +326,7 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
                     source_id,
                     channel,
                     idle_timeout_s,
+                    extra=_log_extra("api.mjpeg.idle_timeout", source_id=source_id, channel=channel),
                 )
                 break
     finally:
@@ -280,7 +337,12 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
         finally:
             if client is not None:
                 client.close()
-        logger.info("MJPEG stream closed source_id=%s channel=%s", source_id, channel)
+        logger.info(
+            "MJPEG stream closed source_id=%s channel=%s",
+            source_id,
+            channel,
+            extra=_log_extra("api.mjpeg.closed", source_id=source_id, channel=channel),
+        )
 
 
 def _result_kind_from_row(row: ResultModel) -> str:
@@ -346,16 +408,17 @@ async def list_results(
             cursor,
             limit,
             len(items),
+            extra=_log_extra("api.results.listed"),
         )
         return ResultsListResponse(count=len(items), items=items, next_cursor=next_cursor)
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /results: %s", exc)
+        logger.exception("Database query failed for /results: %s", exc, extra=_log_extra("api.results.db_failed"))
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
 @app.get("/", response_model=RootResponse)
 async def root() -> RootResponse:
-    logger.debug("Root endpoint called.")
+    logger.debug("Root endpoint called.", extra=_log_extra("api.root.called"))
     return RootResponse(message="API online")
 
 
@@ -371,11 +434,11 @@ def _check_redis() -> tuple[bool, str]:
     try:
         client.ping()
     except redis.RedisError as exc:
-        logger.warning("Redis readiness check failed: %s", exc)
+        logger.warning("Redis readiness check failed: %s", exc, extra=_log_extra("api.readiness.redis_failed"))
         return False, str(exc)
     finally:
         client.close()
-    logger.debug("Redis readiness check passed.")
+    logger.debug("Redis readiness check passed.", extra=_log_extra("api.readiness.redis_ok"))
     return True, "ok"
 
 
@@ -385,23 +448,23 @@ def _check_postgres() -> tuple[bool, str]:
         from sqlalchemy import text
         from .db import engine
     except Exception as exc:
-        logger.warning("Postgres import/readiness bootstrap failed: %s", exc)
+        logger.warning("Postgres import/readiness bootstrap failed: %s", exc, extra=_log_extra("api.readiness.postgres_bootstrap_failed"))
         return False, f"db_import_failed: {exc}"
 
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:
-        logger.warning("Postgres readiness check failed: %s", exc)
+        logger.warning("Postgres readiness check failed: %s", exc, extra=_log_extra("api.readiness.postgres_failed"))
         return False, str(exc)
-    logger.debug("Postgres readiness check passed.")
+    logger.debug("Postgres readiness check passed.", extra=_log_extra("api.readiness.postgres_ok"))
     return True, "ok"
 
 
 @app.get("/health/live", response_model=HealthLiveResponse)
 async def health_live() -> HealthLiveResponse:
     # Liveness should stay lightweight and avoid external dependencies.
-    logger.debug("Liveness check called.")
+    logger.debug("Liveness check called.", extra=_log_extra("api.health.live"))
     return HealthLiveResponse(status="ok")
 
 
@@ -417,6 +480,7 @@ async def health_ready() -> JSONResponse:
         ready,
         redis_ok,
         db_ok,
+        extra=_log_extra("api.health.ready", ready=ready),
     )
     return JSONResponse(
         status_code=code,
@@ -474,7 +538,7 @@ async def list_sources(
             next_cursor = items[-1]["source_id"]
         return SourcesListResponse(items=items, next_cursor=next_cursor)
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources: %s", exc)
+        logger.exception("Database query failed for /sources: %s", exc, extra=_log_extra("api.sources.list.db_failed"))
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -508,7 +572,12 @@ async def get_source(source_id: str, db: Session = Depends(get_db)) -> SourceDet
             supports_live_stream=source_row.kind in {"webcam", "rtsp"},
         )
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources/%s: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /sources/%s: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.sources.get.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -558,7 +627,12 @@ async def list_source_events(
         next_cursor = str(page_rows[-1].id) if has_more and page_rows else None
         return SourceEventsResponse(count=len(items), items=items, next_cursor=next_cursor)
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources/%s/events: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /sources/%s/events: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.sources.events.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -623,7 +697,12 @@ async def get_latest_frame(source_id: str, db: Session = Depends(get_db)) -> Lat
             frame_key=None,
         )
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources/%s/latest-frame: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /sources/%s/latest-frame: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.sources.latest_frame.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -659,7 +738,12 @@ async def get_latest_frame_image(source_id: str, db: Session = Depends(get_db)) 
             headers={"Cache-Control": "no-store"},
         )
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources/%s/frame/latest.jpg: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /sources/%s/frame/latest.jpg: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.sources.latest_image.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -685,7 +769,12 @@ async def stream_source_mjpeg(source_id: str, db: Session = Depends(get_db)) -> 
             headers={"Cache-Control": "no-store"},
         )
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /streams/%s.mjpeg: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /streams/%s.mjpeg: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.streams.mjpeg.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
@@ -760,7 +849,12 @@ async def get_source_stats(source_id: str, db: Session = Depends(get_db)) -> Sou
             last_result_ts_us=int(last_result_ts_us),
         )
     except SQLAlchemyError as exc:
-        logger.exception("Database query failed for /sources/%s/stats: %s", source_id, exc)
+        logger.exception(
+            "Database query failed for /sources/%s/stats: %s",
+            source_id,
+            exc,
+            extra=_log_extra("api.sources.stats.db_failed", source_id=source_id),
+        )
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 

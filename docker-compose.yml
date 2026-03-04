@@ -50,6 +50,7 @@ services:
     env_file: .env
     environment:
       REDIS_HOST: redis
+      POSTGRES_HOST: postgres
     depends_on:
       - redis
       - postgres

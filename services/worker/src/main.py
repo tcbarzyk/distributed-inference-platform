@@ -10,7 +10,6 @@ Flow:
 """
 
 import json
-import logging
 import sys
 import time
 from dataclasses import dataclass
@@ -31,21 +30,23 @@ if str(SHARED_SRC) not in sys.path:
 
 from inference import InferenceInput, get_model_device, load_model, run_inference
 from platform_shared.config import load_service_config
+from platform_shared.observability.logging import get_logger, init_json_logging
 from platform_shared.schemas import Detection, InferenceResult, QueueJob
 from results import publish_result, encode_live_frame_jpeg
 
 CONFIG = load_service_config(caller_file=__file__)
 SCHEMA_VERSION = 1
-
-
-
-logging.basicConfig(
-    level=CONFIG.log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("Worker")
+init_json_logging(service_name="worker", log_level=CONFIG.log_level)
+logger = get_logger("Worker")
 _LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
+
+
+def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event}
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
 
 
 @dataclass
@@ -103,6 +104,7 @@ def _log_progress(metrics: WorkerMetrics) -> None:
         metrics.decode_failures,
         metrics.inference_failures,
         metrics.redis_errors,
+        extra=_log_extra("worker.progress"),
     )
 
 
@@ -143,6 +145,7 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         metrics.mjpeg_publish_errors,
         avg_queue_ms,
         throughput,
+        extra=_log_extra("worker.summary.interval"),
     )
     metrics.last_summary_log_s = now
 
@@ -184,6 +187,7 @@ def _log_summary(metrics: WorkerMetrics) -> None:
         metrics.mjpeg_publish_skipped_rate_limit,
         metrics.mjpeg_publish_errors,
         throughput,
+        extra=_log_extra("worker.summary.final"),
     )
 
 
@@ -195,7 +199,7 @@ def _decode_job_payload(job_raw: bytes, metrics: WorkerMetrics):
         metrics.jobs_invalid += 1
         if "frame_key" in str(exc):
             metrics.missing_frame_key += 1
-        logger.error("Failed to decode queue job: %s", exc)
+        logger.error("Failed to decode queue job: %s", exc, extra=_log_extra("worker.job.decode_failed"))
         return None
 
     metrics.jobs_json_ok += 1
@@ -208,12 +212,21 @@ def _fetch_frame_bytes(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
         frame_bytes = r.get(frame_key)
     except redis.RedisError as exc:
         metrics.redis_errors += 1
-        logger.error("Redis GET failed for key=%s: %s", frame_key, exc)
+        logger.error(
+            "Redis GET failed for key=%s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra("worker.frame.fetch_failed", frame_key=frame_key),
+        )
         return None
 
     if frame_bytes is None:
         metrics.blob_misses += 1
-        logger.warning("Frame data missing or expired for key: %s", frame_key)
+        logger.warning(
+            "Frame data missing or expired for key: %s",
+            frame_key,
+            extra=_log_extra("worker.frame.missing", frame_key=frame_key),
+        )
         return None
 
     return frame_bytes
@@ -229,6 +242,7 @@ def _decode_image(frame_bytes: bytes, frame_id, source_id, metrics: WorkerMetric
             "Failed to decode image for frame_id=%s source_id=%s",
             frame_id,
             source_id,
+            extra=_log_extra("worker.frame.decode_failed", frame_id=frame_id, source_id=source_id),
         )
         return None
     return image
@@ -259,7 +273,12 @@ def _run_inference_safe(inference_input: InferenceInput, model, frame_key: str, 
         inference_result = run_inference(inference_input, model)
     except Exception as exc:
         metrics.inference_failures += 1
-        logger.exception("Inference failed for key=%s: %s", frame_key, exc)
+        logger.exception(
+            "Inference failed for key=%s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra("worker.inference.failed", frame_key=frame_key),
+        )
         return None
     return inference_result
 
@@ -315,10 +334,26 @@ def _publish_result_safe(
             publish_meta.get("results_file"),
             publish_meta.get("detections_count"),
             publish_meta.get("annotated_path"),
+            extra=_log_extra(
+                "worker.result.published",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+                job_id=inference_result.job_id,
+            ),
         )
     except Exception as exc:
         metrics.publish_failures += 1
-        logger.exception("Result publish failed for frame_id=%s: %s", inference_result.frame_id, exc)
+        logger.exception(
+            "Result publish failed for frame_id=%s: %s",
+            inference_result.frame_id,
+            exc,
+            extra=_log_extra(
+                "worker.result.publish_failed",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+                job_id=inference_result.job_id,
+            ),
+        )
 
 
 def _mjpeg_channel_for_source(source_id: str) -> str:
@@ -345,14 +380,24 @@ def _delete_frame_key(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
             metrics.deleted_blobs += 1
     except redis.RedisError as exc:
         metrics.redis_errors += 1
-        logger.error("Redis DEL failed for key=%s: %s", frame_key, exc)
+        logger.error(
+            "Redis DEL failed for key=%s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra("worker.frame.delete_failed", frame_key=frame_key),
+        )
 
 
 def run_worker():
     """Main worker loop: consume jobs, process frames, publish results, log metrics."""
     metrics = WorkerMetrics(start_time_s=time.time())
     metrics.last_summary_log_s = metrics.start_time_s
-    logger.info("Worker will connect to Redis at %s:%s", CONFIG.redis_host, CONFIG.redis_port)
+    logger.info(
+        "Worker will connect to Redis at %s:%s",
+        CONFIG.redis_host,
+        CONFIG.redis_port,
+        extra=_log_extra("worker.startup.redis_target"),
+    )
 
     with redis.Redis(
         host=CONFIG.redis_host,
@@ -361,12 +406,17 @@ def run_worker():
         password=CONFIG.redis_password,
         decode_responses=False,  # Keep binary data as bytes for image decode.
     ) as r:
-        logger.info("Worker online. Waiting on queue: %s", CONFIG.queue_name)
+        logger.info(
+            "Worker online. Waiting on queue: %s",
+            CONFIG.queue_name,
+            extra=_log_extra("worker.startup.online", queue_name=CONFIG.queue_name),
+        )
         model = load_model(CONFIG.worker_model_device)  # Preload model once to avoid first-frame latency.
         logger.info(
             "Model loaded and ready for inference. device_preference=%s resolved_device=%s",
             CONFIG.worker_model_device,
             get_model_device(),
+            extra=_log_extra("worker.startup.model_ready"),
         )
         logger.info(
             (
@@ -379,12 +429,14 @@ def run_worker():
             CONFIG.worker_live_frames_jpeg_quality,
             CONFIG.worker_live_frame_key_prefix,
             CONFIG.worker_live_meta_key_prefix,
+            extra=_log_extra("worker.config.live_frames"),
         )
         logger.info(
             "MJPEG PubSub settings | enabled=%s max_fps=%d channel_prefix=%s",
             CONFIG.worker_mjpeg_publish_enabled,
             CONFIG.worker_mjpeg_max_fps,
             CONFIG.worker_mjpeg_channel_prefix,
+            extra=_log_extra("worker.config.mjpeg"),
         )
 
         try:
@@ -394,7 +446,7 @@ def run_worker():
                     result = r.brpop(CONFIG.queue_name, timeout=0)
                 except redis.RedisError as exc:
                     metrics.redis_errors += 1
-                    logger.error("Redis BRPOP failed: %s", exc)
+                    logger.error("Redis BRPOP failed: %s", exc, extra=_log_extra("worker.queue.pop_failed"))
                     continue
 
                 if not result:
@@ -426,6 +478,14 @@ def run_worker():
                     image.dtype,
                     _fmt_latency(queue_latency_ms),
                     _fmt_latency(source_latency_ms),
+                    extra=_log_extra(
+                        "worker.job.received",
+                        job_id=job.job_id,
+                        frame_id=job.frame_id,
+                        source_id=job.source_id,
+                        queue_latency_ms=queue_latency_ms,
+                        source_latency_ms=source_latency_ms,
+                    ),
                 )
 
                 inference_input = InferenceInput(
@@ -446,7 +506,16 @@ def run_worker():
                     inference_result = _build_result_model(job, inference_result_raw, now_us)
                 except ValueError as exc:
                     metrics.publish_failures += 1
-                    logger.error("Failed to build inference result schema: %s", exc)
+                    logger.error(
+                        "Failed to build inference result schema: %s",
+                        exc,
+                        extra=_log_extra(
+                            "worker.result.schema_build_failed",
+                            job_id=job.job_id,
+                            frame_id=job.frame_id,
+                            source_id=job.source_id,
+                        ),
+                    )
                     continue
 
 
@@ -457,6 +526,14 @@ def run_worker():
                     inference_result.model,
                     inference_result.inference_ms,
                     inference_result.pipeline_ms,
+                    extra=_log_extra(
+                        "worker.inference.completed",
+                        job_id=inference_result.job_id,
+                        frame_id=inference_result.frame_id,
+                        source_id=inference_result.source_id,
+                        inference_ms=inference_result.inference_ms,
+                        pipeline_ms=inference_result.pipeline_ms,
+                    ),
                 )
 
                 _publish_result_safe(r=r, image=image, inference_result=inference_result, metrics=metrics)
@@ -465,13 +542,13 @@ def run_worker():
                 _maybe_log_interval_summary(metrics)
 
         except KeyboardInterrupt:
-            logger.info("Worker shutting down...")
+            logger.info("Worker shutting down...", extra=_log_extra("worker.shutdown"))
         finally:
             _maybe_log_interval_summary(metrics, force=True)
             metrics.end_time_s = time.time()
             _log_summary(metrics)
 
-    logger.info("Worker connection closed.")
+    logger.info("Worker connection closed.", extra=_log_extra("worker.closed"))
 
 def _publish_live_frame_safe(
   *,
@@ -492,6 +569,11 @@ def _publish_live_frame_safe(
             plan.get("reason"),
             plan.get("enabled"),
             plan.get("should_publish"),
+            extra=_log_extra(
+                "worker.live_frame.skipped",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+            ),
         )
         return
     frame_key = plan["frame_key"]
@@ -506,7 +588,15 @@ def _publish_live_frame_safe(
     )
     if jpeg_bytes is None:
         metrics.live_frame_encode_failures += 1
-        logger.error("Failed to encode live frame JPEG for frame_id=%s", inference_result.frame_id)
+        logger.error(
+            "Failed to encode live frame JPEG for frame_id=%s",
+            inference_result.frame_id,
+            extra=_log_extra(
+                "worker.live_frame.encode_failed",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+            ),
+        )
         return
     metadata["byte_length"] = len(jpeg_bytes)
     metadata["written_at_us"] = int(time.time() * 1_000_000)
@@ -527,6 +617,13 @@ def _publish_live_frame_safe(
             meta_key,
             len(jpeg_bytes),
             ttl,
+            extra=_log_extra(
+                "worker.live_frame.written",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+                frame_key=frame_key,
+                meta_key=meta_key,
+            ),
         )
         metrics.mjpeg_publish_attempted += 1
         if _should_publish_mjpeg_for_source(inference_result.source_id):
@@ -540,6 +637,13 @@ def _publish_live_frame_safe(
                     _mjpeg_channel_for_source(inference_result.source_id),
                     sent,
                     len(jpeg_bytes),
+                    extra=_log_extra(
+                        "worker.mjpeg.published",
+                        source_id=inference_result.source_id,
+                        frame_id=inference_result.frame_id,
+                        channel=_mjpeg_channel_for_source(inference_result.source_id),
+                        subscribers=sent,
+                    ),
                 )
             except redis.RedisError as exc:
                 metrics.redis_errors += 1
@@ -550,14 +654,28 @@ def _publish_live_frame_safe(
                     inference_result.frame_id,
                     _mjpeg_channel_for_source(inference_result.source_id),
                     exc,
+                    extra=_log_extra(
+                        "worker.mjpeg.publish_failed",
+                        source_id=inference_result.source_id,
+                        frame_id=inference_result.frame_id,
+                        channel=_mjpeg_channel_for_source(inference_result.source_id),
+                    ),
                 )
         else:
             metrics.mjpeg_publish_skipped_rate_limit += 1
     except redis.RedisError as exc:
         metrics.redis_errors += 1
         metrics.live_frame_write_failures += 1
-        logger.warning("Live frame Redis publish failed source=%s: %s",
-  inference_result.source_id, exc)
+        logger.warning(
+            "Live frame Redis publish failed source=%s: %s",
+            inference_result.source_id,
+            exc,
+            extra=_log_extra(
+                "worker.live_frame.publish_failed",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+            ),
+        )
 
 
 if __name__ == "__main__":

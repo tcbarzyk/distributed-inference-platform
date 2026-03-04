@@ -24,27 +24,35 @@ if str(SHARED_SRC) not in sys.path:
     sys.path.insert(0, str(SHARED_SRC))
 
 import redis
-import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from frame_discovery import discover_frames, discover_frames_by_source
 import cv2
 from dataclasses import dataclass
+from typing import Any
 
 from platform_shared.schemas import QueueJob
 from platform_shared.config import load_service_config
+from platform_shared.observability.logging import get_logger, init_json_logging
 
 CONFIG = load_service_config(caller_file=__file__)
+init_json_logging(service_name="producer", log_level=CONFIG.log_level)
+logger = get_logger("Producer")
 
-# Set up formatting
-logging.basicConfig(
-    level=CONFIG.log_level,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
+def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event}
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+logger.info(
+    "Producer will connect to Redis at %s:%s",
+    CONFIG.redis_host,
+    CONFIG.redis_port,
+    extra=_log_extra("producer.startup.redis_target"),
 )
-logger = logging.getLogger("Producer")
-
-logger.info(f"Producer will connect to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
 SCHEMA_VERSION = 1
 
 
@@ -108,7 +116,17 @@ def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, 
             ex=CONFIG.producer_frame_ttl_seconds,
         )
     except redis.RedisError as exc:
-        logger.warning("Redis SET failed for %s: %s", frame_key, exc)
+        logger.warning(
+            "Redis SET failed for %s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra(
+                "producer.frame.redis_set_failed",
+                source_id=record.source_id,
+                frame_id=record.frame_id,
+                frame_key=frame_key,
+            ),
+        )
         return False, "redis_set_failed"
 
     job_data = QueueJob(
@@ -124,7 +142,18 @@ def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, 
     try:
         r.lpush(CONFIG.queue_name, job_data.to_json_bytes())
     except redis.RedisError as exc:
-        logger.warning("Queue LPUSH failed for %s: %s", frame_key, exc)
+        logger.warning(
+            "Queue LPUSH failed for %s: %s",
+            frame_key,
+            exc,
+            extra=_log_extra(
+                "producer.queue.push_failed",
+                source_id=record.source_id,
+                frame_id=record.frame_id,
+                frame_key=frame_key,
+                job_id=job_data.job_id,
+            ),
+        )
         return False, "queue_push_failed"
 
     return True, None
@@ -163,6 +192,12 @@ def _sleep_for_replay_mode(
                 "Non-positive timestamp delta at frame_id=%s (delta_us=%s); skipping sleep.",
                 frames[index].frame_id,
                 delta_us,
+                extra=_log_extra(
+                    "producer.replay.invalid_delta",
+                    frame_id=frames[index].frame_id,
+                    source_id=frames[index].source_id,
+                    delta_us=delta_us,
+                ),
             )
             return
 
@@ -198,6 +233,7 @@ def _maybe_log_interval_summary(metrics: ProducerMetrics, mode_label: str, *, fo
         metrics.dropped_frames,
         _producer_redis_errors(metrics),
         throughput,
+        extra=_log_extra("producer.summary.interval", mode=mode_label),
     )
     metrics.last_summary_log_s = now
 
@@ -223,6 +259,7 @@ def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
         _producer_redis_errors(metrics),
         metrics.total_sleep_seconds,
         effective_fps,
+        extra=_log_extra("producer.summary.final", mode=mode_label),
     )
 
 
@@ -252,7 +289,17 @@ def _run_source_frame_sequence(r: redis.Redis, source_id: str, frames) -> Produc
         if image is None:
             metrics.read_failures += 1
             metrics.dropped_frames += 1
-            logger.warning("Failed to read image at %s for source=%s, skipping.", record.path, source_id)
+            logger.warning(
+                "Failed to read image at %s for source=%s, skipping.",
+                record.path,
+                source_id,
+                extra=_log_extra(
+                    "producer.frame.read_failed",
+                    source_id=source_id,
+                    frame_id=record.frame_id,
+                    path=str(record.path),
+                ),
+            )
             continue
 
         published, reason = _publish_frame(r, record, image)
@@ -284,6 +331,7 @@ def _run_sample_file_mode_parallel_sources(r: redis.Redis) -> None:
         "Starting parallel sample-file replay: sources=%d max_workers=%d",
         source_count,
         max_workers,
+        extra=_log_extra("producer.mode.sample_files_parallel.start"),
     )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -307,9 +355,15 @@ def _run_sample_file_mode_parallel_sources(r: redis.Redis) -> None:
                     source_metrics.published_frames,
                     source_metrics.dropped_frames,
                     _producer_redis_errors(source_metrics),
+                    extra=_log_extra("producer.source.complete", source_id=source_id),
                 )
             except Exception as exc:
-                logger.exception("Parallel source task failed for source=%s: %s", source_id, exc)
+                logger.exception(
+                    "Parallel source task failed for source=%s: %s",
+                    source_id,
+                    exc,
+                    extra=_log_extra("producer.source.failed", source_id=source_id),
+                )
 
     metrics.end_time_s = time.time()
     _maybe_log_interval_summary(metrics, "sample_files_parallel", force=True)
@@ -329,7 +383,11 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
     metrics.last_summary_log_s = metrics.start_time_s
     frames = discover_frames()
     metrics.discovered_frames = len(frames)
-    logger.info("Total frames discovered: %d", metrics.discovered_frames)
+    logger.info(
+        "Total frames discovered: %d",
+        metrics.discovered_frames,
+        extra=_log_extra("producer.discovery.complete"),
+    )
 
     for idx, record in enumerate(frames):
         loop_started_s = time.perf_counter()
@@ -339,7 +397,16 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
         if image is None:
             metrics.read_failures += 1
             metrics.dropped_frames += 1
-            logger.warning("Failed to read image at %s, skipping.", record.path)
+            logger.warning(
+                "Failed to read image at %s, skipping.",
+                record.path,
+                extra=_log_extra(
+                    "producer.frame.read_failed",
+                    source_id=record.source_id,
+                    frame_id=record.frame_id,
+                    path=str(record.path),
+                ),
+            )
             continue
 
         published, reason = _publish_frame(r, record, image)
@@ -376,7 +443,11 @@ def _run_livestream_mode(r: redis.Redis) -> None:
     metrics = ProducerMetrics(start_time_s=time.time())
     metrics.last_summary_log_s = metrics.start_time_s
     source_id = CONFIG.producer_stream_source_id or "stream-1"
-    logger.info("Starting livestream producer for source_id=%s", source_id)
+    logger.info(
+        "Starting livestream producer for source_id=%s",
+        source_id,
+        extra=_log_extra("producer.mode.livestream.start", source_id=source_id),
+    )
 
     # OpenCV handles opening camera devices and network stream URLs.
     # Examples:
@@ -396,7 +467,10 @@ def _run_livestream_mode(r: redis.Redis) -> None:
             # ok=False or image=None usually means source interruption/end/failure.
             ok, image = cap.read()
             if not ok or image is None:
-                logger.warning("Livestream frame read failed; stopping stream loop.")
+                logger.warning(
+                    "Livestream frame read failed; stopping stream loop.",
+                    extra=_log_extra("producer.livestream.read_failed", source_id=source_id, frame_id=frame_id),
+                )
                 break
 
             metrics.attempted_frames += 1
@@ -446,7 +520,10 @@ def _run_livestream_mode(r: redis.Redis) -> None:
             # max mode: no sleep
             _maybe_log_interval_summary(metrics, "livestream")
     except KeyboardInterrupt:
-        logger.info("Livestream shutdown signal received.")
+        logger.info(
+            "Livestream shutdown signal received.",
+            extra=_log_extra("producer.livestream.shutdown", source_id=source_id),
+        )
     finally:
         # Always release capture handles and log a final run summary.
         cap.release()
@@ -463,7 +540,7 @@ def validate_producer_config() -> None:
     the filesystem assumptions needed for file-based replay.
     """
     if CONFIG.producer_source_mode == "livestream":
-        logger.info("Config validation passed for livestream mode.")
+        logger.info("Config validation passed for livestream mode.", extra=_log_extra("producer.config.validated"))
         return
 
     if CONFIG.producer_source_mode != "sample_files":
@@ -501,6 +578,7 @@ def validate_producer_config() -> None:
         sample_root,
         ",".join(CONFIG.producer_camera_dirs),
         matched_total,
+        extra=_log_extra("producer.config.validated"),
     )
 
 
@@ -522,7 +600,12 @@ def run_producer():
     ) as r:
         try:
             r.ping()
-            logger.info(f"Connected to Redis at {CONFIG.redis_host}:{CONFIG.redis_port}")
+            logger.info(
+                "Connected to Redis at %s:%s",
+                CONFIG.redis_host,
+                CONFIG.redis_port,
+                extra=_log_extra("producer.redis.connected"),
+            )
             if CONFIG.producer_source_mode == "sample_files":
                 if CONFIG.producer_parallel_sources and len(CONFIG.producer_camera_dirs) > 1:
                     _run_sample_file_mode_parallel_sources(r)
@@ -534,12 +617,15 @@ def run_producer():
                 raise ValueError(f"Unsupported PRODUCER_SOURCE_MODE: {CONFIG.producer_source_mode}")
 
         except redis.ConnectionError:
-            logger.error("Could not connect to Redis. Is the Docker container running?")
+            logger.error(
+                "Could not connect to Redis. Is the Docker container running?",
+                extra=_log_extra("producer.redis.connect_failed"),
+            )
         except KeyboardInterrupt:
-            logger.info("Shutdown signal received.")
+            logger.info("Shutdown signal received.", extra=_log_extra("producer.shutdown"))
     
     # Once we exit the 'with' block, the connection is already closed.
-    logger.info("Producer connection closed safely.")
+    logger.info("Producer connection closed safely.", extra=_log_extra("producer.closed"))
 
 if __name__ == "__main__":
     run_producer()

@@ -59,6 +59,8 @@ The `docker-compose.override.yml` worker-dev service correctly sets both, confir
 
 **Fix:** Add `POSTGRES_HOST: postgres` to the worker service environment block.
 
+### FIXED
+
 ---
 
 ### B2. Redis connection leak in API service

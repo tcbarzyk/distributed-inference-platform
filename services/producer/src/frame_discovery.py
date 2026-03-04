@@ -10,7 +10,6 @@ Behavior:
 
 from pathlib import Path
 import sys
-import logging
 from dataclasses import dataclass
 
 # Support both direct-script and module execution.
@@ -22,16 +21,10 @@ if str(SHARED_SRC) not in sys.path:
     sys.path.insert(0, str(SHARED_SRC))
 
 from platform_shared.config import load_service_config
+from platform_shared.observability.logging import get_logger, init_json_logging
 
 CONFIG = load_service_config(caller_file=__file__)
-
-# Set up formatting
-logging.basicConfig(
-    level=CONFIG.log_level,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger("Producer")
+logger = get_logger("Producer.FrameDiscovery")
 
 @dataclass(frozen=True)
 class FrameRecord:
@@ -123,6 +116,7 @@ def parse_capture_timestamp(frame_path: Path) -> int:
     return int(timestamp_str)
 
 if __name__ == "__main__":
+    init_json_logging(service_name="producer", log_level=CONFIG.log_level)
     try:
         frames = discover_frames()
         logger.info(f"Total frames discovered: {len(frames)}")
