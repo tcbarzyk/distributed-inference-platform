@@ -591,6 +591,7 @@ def run_worker():
                 )
 
                 _publish_result_safe(r=r, image=image, inference_result=inference_result, metrics=metrics)
+                _publish_mjpeg_safe(r=r, image=image, inference_result=inference_result, metrics=metrics)
                 _delete_frame_key(r, job.frame_key, metrics)
                 WORKER_INFERENCE_DURATION_MS.observe(float(inference_result.inference_ms))
                 WORKER_PIPELINE_DURATION_MS.observe(float(inference_result.pipeline_ms))
@@ -682,45 +683,6 @@ def _publish_live_frame_safe(
                 meta_key=meta_key,
             ),
         )
-        metrics.mjpeg_publish_attempted += 1
-        if _should_publish_mjpeg_for_source(inference_result.source_id):
-            try:
-                sent = r.publish(_mjpeg_channel_for_source(inference_result.source_id), jpeg_bytes)
-                metrics.mjpeg_publish_sent += 1
-                logger.debug(
-                    "MJPEG frame published source_id=%s frame_id=%s channel=%s subscribers=%d bytes=%d",
-                    inference_result.source_id,
-                    inference_result.frame_id,
-                    _mjpeg_channel_for_source(inference_result.source_id),
-                    sent,
-                    len(jpeg_bytes),
-                    extra=_log_extra(
-                        "worker.mjpeg.published",
-                        source_id=inference_result.source_id,
-                        frame_id=inference_result.frame_id,
-                        channel=_mjpeg_channel_for_source(inference_result.source_id),
-                        subscribers=sent,
-                    ),
-                )
-            except redis.RedisError as exc:
-                metrics.redis_errors += 1
-                metrics.mjpeg_publish_errors += 1
-                WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
-                logger.warning(
-                    "MJPEG publish failed source=%s frame_id=%s channel=%s: %s",
-                    inference_result.source_id,
-                    inference_result.frame_id,
-                    _mjpeg_channel_for_source(inference_result.source_id),
-                    exc,
-                    extra=_log_extra(
-                        "worker.mjpeg.publish_failed",
-                        source_id=inference_result.source_id,
-                        frame_id=inference_result.frame_id,
-                        channel=_mjpeg_channel_for_source(inference_result.source_id),
-                    ),
-                )
-        else:
-            metrics.mjpeg_publish_skipped_rate_limit += 1
     except redis.RedisError as exc:
         metrics.redis_errors += 1
         metrics.live_frame_write_failures += 1
@@ -733,6 +695,67 @@ def _publish_live_frame_safe(
                 "worker.live_frame.publish_failed",
                 source_id=inference_result.source_id,
                 frame_id=inference_result.frame_id,
+            ),
+        )
+
+
+def _publish_mjpeg_safe(
+  *,
+  r: redis.Redis,
+  inference_result: InferenceResult,
+  image,
+  metrics: WorkerMetrics,
+) -> None:
+    if not CONFIG.worker_mjpeg_publish_enabled:
+        return
+    metrics.mjpeg_publish_attempted += 1
+    if not _should_publish_mjpeg_for_source(inference_result.source_id):
+        metrics.mjpeg_publish_skipped_rate_limit += 1
+        return
+
+    jpeg_bytes = encode_live_frame_jpeg(
+        image=image,
+        detections=[d.to_dict() for d in inference_result.detections],
+        jpeg_quality=CONFIG.worker_live_frames_jpeg_quality,
+    )
+    if jpeg_bytes is None:
+        metrics.mjpeg_publish_errors += 1
+        return
+
+    channel = _mjpeg_channel_for_source(inference_result.source_id)
+    try:
+        sent = r.publish(channel, jpeg_bytes)
+        metrics.mjpeg_publish_sent += 1
+        logger.debug(
+            "MJPEG frame published source_id=%s frame_id=%s channel=%s subscribers=%d bytes=%d",
+            inference_result.source_id,
+            inference_result.frame_id,
+            channel,
+            sent,
+            len(jpeg_bytes),
+            extra=_log_extra(
+                "worker.mjpeg.published",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+                channel=channel,
+                subscribers=sent,
+            ),
+        )
+    except redis.RedisError as exc:
+        metrics.redis_errors += 1
+        metrics.mjpeg_publish_errors += 1
+        WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
+        logger.warning(
+            "MJPEG publish failed source=%s frame_id=%s channel=%s: %s",
+            inference_result.source_id,
+            inference_result.frame_id,
+            channel,
+            exc,
+            extra=_log_extra(
+                "worker.mjpeg.publish_failed",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+                channel=channel,
             ),
         )
 

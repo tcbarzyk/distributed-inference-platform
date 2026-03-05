@@ -358,7 +358,7 @@ Focus: fix bugs, improve reliability of the existing pipeline.
 - [ ] **B1.** Add `POSTGRES_HOST: postgres` to worker service in `docker-compose.yml`.
 - [ ] **B2.** Create a shared Redis connection pool in the API service.
 - [ ] **B4.** Add exponential backoff with jitter on Redis errors in the worker loop.
-- [ ] **B5.** Decouple MJPEG publish from live-frame write path in worker.
+- [x] **B5.** Decouple MJPEG publish from live-frame write path in worker.
 - [ ] **B6.** Add SIGTERM signal handler in producer, worker, and API.
 - [ ] **B8.** Add reconnection loop for livestream producer mode.
 - [ ] **R4.** Add Docker Compose healthchecks for Redis, Postgres, and application services.
