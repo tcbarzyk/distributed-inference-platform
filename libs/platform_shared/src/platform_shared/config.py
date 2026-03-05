@@ -48,6 +48,8 @@ class ServiceConfig:
     worker_mjpeg_max_fps: int
     worker_mjpeg_channel_prefix: str
     api_source_active_window_seconds: int
+    producer_metrics_port: int
+    worker_metrics_port: int
 
 
 def _repo_root_from(caller_file: str) -> Path:
@@ -219,6 +221,16 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         os.getenv("API_SOURCE_ACTIVE_WINDOW_SECONDS"),
         10,
     )
+    producer_metrics_port = _to_int(
+        "PRODUCER_METRICS_PORT",
+        os.getenv("PRODUCER_METRICS_PORT"),
+        9101,
+    )
+    worker_metrics_port = _to_int(
+        "WORKER_METRICS_PORT",
+        os.getenv("WORKER_METRICS_PORT"),
+        9102,
+    )
 
     if producer_source_mode == "sample_files" and not producer_sample_root:
         default_sample_root = repo_root / "services/producer/sample-video/20140618_Sequence1a/Sequence1a"
@@ -264,6 +276,10 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         raise ValueError("WORKER_MJPEG_CHANNEL_PREFIX cannot be empty")
     if api_source_active_window_seconds <= 0:
         raise ValueError("API_SOURCE_ACTIVE_WINDOW_SECONDS must be greater than 0")
+    if producer_metrics_port <= 0 or producer_metrics_port > 65535:
+        raise ValueError("PRODUCER_METRICS_PORT must be in range 1-65535")
+    if worker_metrics_port <= 0 or worker_metrics_port > 65535:
+        raise ValueError("WORKER_METRICS_PORT must be in range 1-65535")
 
     return ServiceConfig(
         redis_host=redis_host,
@@ -303,4 +319,6 @@ def load_service_config(*, caller_file: str) -> ServiceConfig:
         worker_mjpeg_max_fps=worker_mjpeg_max_fps,
         worker_mjpeg_channel_prefix=worker_mjpeg_channel_prefix,
         api_source_active_window_seconds=api_source_active_window_seconds,
+        producer_metrics_port=producer_metrics_port,
+        worker_metrics_port=worker_metrics_port,
     )

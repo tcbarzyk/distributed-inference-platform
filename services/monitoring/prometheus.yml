@@ -1,0 +1,59 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "api"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "api:8000"
+
+  - job_name: "producer"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "producer:9101"
+
+  # Production worker replicas.
+  # Uses Docker service discovery so --scale worker=N works automatically.
+  - job_name: "worker"
+    metrics_path: /metrics
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        filters:
+          - name: label
+            values: ["com.docker.compose.service=worker"]
+    relabel_configs:
+      - source_labels: [__meta_docker_container_name]
+        regex: "/?(.*)"
+        target_label: instance
+      - source_labels: [__address__]
+        regex: "([^:]+)(?::.*)?"
+        replacement: "${1}:9102"
+        target_label: __address__
+
+  # Scaled worker-dev replicas (dev profile).
+  # Uses Docker service discovery so Prometheus finds every replica
+  # automatically, even when --scale worker-dev=N changes.
+  - job_name: "worker-dev"
+    metrics_path: /metrics
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        filters:
+          - name: label
+            values: ["com.docker.compose.service=worker-dev"]
+    relabel_configs:
+      # Use container name as the instance label for per-replica visibility.
+      - source_labels: [__meta_docker_container_name]
+        regex: "/?(.*)"
+        target_label: instance
+      # Override discovered port with the metrics port worker-dev listens on.
+      - source_labels: [__meta_docker_port_private]
+        regex: ".*"
+        replacement: "9103"
+        target_label: __meta_docker_port_private
+      - source_labels: [__address__]
+        regex: "([^:]+)(?::.*)?"  
+        replacement: "${1}:9103"
+        target_label: __address__

@@ -72,6 +72,8 @@ Every API request that touches Redis creates a **new `redis.Redis()` connection*
 
 **Fix:** Create a single module-level `redis.ConnectionPool` (or `redis.Redis` with pool) at startup and share it across all request handlers. This is a one-line change in architecture but touches many call sites.
 
+### FIXED
+
 ---
 
 ### B3. MJPEG stream blocks the async event loop

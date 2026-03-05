@@ -30,10 +30,17 @@ from frame_discovery import discover_frames, discover_frames_by_source
 import cv2
 from dataclasses import dataclass
 from typing import Any
+from prometheus_client import start_http_server
 
 from platform_shared.schemas import QueueJob
 from platform_shared.config import load_service_config
 from platform_shared.observability.logging import get_logger, init_json_logging
+from platform_shared.observability.metrics import (
+    MetricNames,
+    STAGE_LABELS,
+    make_counter,
+    make_histogram,
+)
 
 CONFIG = load_service_config(caller_file=__file__)
 init_json_logging(service_name="producer", log_level=CONFIG.log_level)
@@ -54,6 +61,24 @@ logger.info(
     extra=_log_extra("producer.startup.redis_target"),
 )
 SCHEMA_VERSION = 1
+
+PRODUCER_FRAMES_PUBLISHED_TOTAL = make_counter(
+    MetricNames.PRODUCER_FRAMES_PUBLISHED_TOTAL,
+    "Total frames successfully published by producer.",
+)
+PRODUCER_FRAMES_DROPPED_TOTAL = make_counter(
+    MetricNames.PRODUCER_FRAMES_DROPPED_TOTAL,
+    "Total frames dropped by producer.",
+)
+PRODUCER_FAILURES_TOTAL = make_counter(
+    MetricNames.PRODUCER_FAILURES_TOTAL,
+    "Total producer failures by stage.",
+    labelnames=STAGE_LABELS,
+)
+PRODUCER_PUBLISH_LATENCY_MS = make_histogram(
+    MetricNames.PRODUCER_PUBLISH_LATENCY_MS,
+    "Producer publish attempt latency in milliseconds.",
+)
 
 
 @dataclass
@@ -98,12 +123,14 @@ def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, 
     - (False, reason) on failure, where reason is one of:
       `encode_failed`, `redis_set_failed`, `queue_push_failed`
     """
+    started = time.perf_counter()
     ok, encoded = cv2.imencode(
         ".jpg",
         image,
         [cv2.IMWRITE_JPEG_QUALITY, CONFIG.producer_jpeg_quality],
     )
     if not ok:
+        PRODUCER_PUBLISH_LATENCY_MS.observe((time.perf_counter() - started) * 1000.0)
         return False, "encode_failed"
 
     frame_bytes = encoded.tobytes()
@@ -127,6 +154,7 @@ def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, 
                 frame_key=frame_key,
             ),
         )
+        PRODUCER_PUBLISH_LATENCY_MS.observe((time.perf_counter() - started) * 1000.0)
         return False, "redis_set_failed"
 
     job_data = QueueJob(
@@ -154,8 +182,10 @@ def _publish_frame(r: redis.Redis, record: PublishRecord, image) -> tuple[bool, 
                 job_id=job_data.job_id,
             ),
         )
+        PRODUCER_PUBLISH_LATENCY_MS.observe((time.perf_counter() - started) * 1000.0)
         return False, "queue_push_failed"
 
+    PRODUCER_PUBLISH_LATENCY_MS.observe((time.perf_counter() - started) * 1000.0)
     return True, None
 
 
@@ -213,7 +243,13 @@ def _producer_redis_errors(metrics: ProducerMetrics) -> int:
     return metrics.redis_set_failures + metrics.queue_push_failures
 
 
-def _maybe_log_interval_summary(metrics: ProducerMetrics, mode_label: str, *, force: bool = False) -> None:
+def _maybe_log_interval_summary(
+    metrics: ProducerMetrics,
+    mode_label: str,
+    *,
+    force: bool = False,
+    source_id: str | None = None,
+) -> None:
     now = time.time()
     if not force and (now - metrics.last_summary_log_s) < CONFIG.producer_summary_log_interval_seconds:
         return
@@ -233,12 +269,12 @@ def _maybe_log_interval_summary(metrics: ProducerMetrics, mode_label: str, *, fo
         metrics.dropped_frames,
         _producer_redis_errors(metrics),
         throughput,
-        extra=_log_extra("producer.summary.interval", mode=mode_label),
+        extra=_log_extra("producer.summary.interval", mode=mode_label, source_id=source_id),
     )
     metrics.last_summary_log_s = now
 
 
-def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
+def _log_summary(metrics: ProducerMetrics, mode_label: str, *, source_id: str | None = None) -> None:
     """Log final producer summary line."""
     elapsed = max(0.0, metrics.end_time_s - metrics.start_time_s)
     effective_fps = (metrics.published_frames / elapsed) if elapsed > 0 else 0.0
@@ -259,7 +295,7 @@ def _log_summary(metrics: ProducerMetrics, mode_label: str) -> None:
         _producer_redis_errors(metrics),
         metrics.total_sleep_seconds,
         effective_fps,
-        extra=_log_extra("producer.summary.final", mode=mode_label),
+        extra=_log_extra("producer.summary.final", mode=mode_label, source_id=source_id),
     )
 
 
@@ -284,11 +320,14 @@ def _run_source_frame_sequence(r: redis.Redis, source_id: str, frames) -> Produc
 
     for idx, record in enumerate(frames):
         loop_started_s = time.perf_counter()
+        _maybe_log_interval_summary(metrics, "sample_files_parallel_source", source_id=source_id)
         metrics.attempted_frames += 1
         image = cv2.imread(str(record.path), cv2.IMREAD_GRAYSCALE)
         if image is None:
             metrics.read_failures += 1
             metrics.dropped_frames += 1
+            PRODUCER_FRAMES_DROPPED_TOTAL.inc()
+            PRODUCER_FAILURES_TOTAL.labels(stage="read").inc()
             logger.warning(
                 "Failed to read image at %s for source=%s, skipping.",
                 record.path,
@@ -305,18 +344,31 @@ def _run_source_frame_sequence(r: redis.Redis, source_id: str, frames) -> Produc
         published, reason = _publish_frame(r, record, image)
         if not published:
             metrics.dropped_frames += 1
+            PRODUCER_FRAMES_DROPPED_TOTAL.inc()
             if reason == "encode_failed":
                 metrics.encode_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="encode").inc()
             elif reason == "redis_set_failed":
                 metrics.redis_set_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="redis_set").inc()
             elif reason == "queue_push_failed":
                 metrics.queue_push_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="queue_push").inc()
             continue
 
         metrics.published_frames += 1
+        PRODUCER_FRAMES_PUBLISHED_TOTAL.inc()
         _sleep_for_replay_mode(frames, idx, metrics, loop_started_s=loop_started_s)
+        _maybe_log_interval_summary(metrics, "sample_files_parallel_source", source_id=source_id)
 
     metrics.end_time_s = time.time()
+    _maybe_log_interval_summary(
+        metrics,
+        "sample_files_parallel_source",
+        force=True,
+        source_id=source_id,
+    )
+    _log_summary(metrics, "sample_files_parallel_source", source_id=source_id)
     return metrics
 
 
@@ -397,6 +449,8 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
         if image is None:
             metrics.read_failures += 1
             metrics.dropped_frames += 1
+            PRODUCER_FRAMES_DROPPED_TOTAL.inc()
+            PRODUCER_FAILURES_TOTAL.labels(stage="read").inc()
             logger.warning(
                 "Failed to read image at %s, skipping.",
                 record.path,
@@ -412,15 +466,20 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
         published, reason = _publish_frame(r, record, image)
         if not published:
             metrics.dropped_frames += 1
+            PRODUCER_FRAMES_DROPPED_TOTAL.inc()
             if reason == "encode_failed":
                 metrics.encode_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="encode").inc()
             elif reason == "redis_set_failed":
                 metrics.redis_set_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="redis_set").inc()
             elif reason == "queue_push_failed":
                 metrics.queue_push_failures += 1
+                PRODUCER_FAILURES_TOTAL.labels(stage="queue_push").inc()
             continue
 
         metrics.published_frames += 1
+        PRODUCER_FRAMES_PUBLISHED_TOTAL.inc()
         _sleep_for_replay_mode(frames, idx, metrics, loop_started_s=loop_started_s)
         _maybe_log_interval_summary(metrics, "sample_files")
 
@@ -493,14 +552,19 @@ def _run_livestream_mode(r: redis.Redis) -> None:
             published, reason = _publish_frame(r, record, image)
             if not published:
                 metrics.dropped_frames += 1
+                PRODUCER_FRAMES_DROPPED_TOTAL.inc()
                 if reason == "encode_failed":
                     metrics.encode_failures += 1
+                    PRODUCER_FAILURES_TOTAL.labels(stage="encode").inc()
                 elif reason == "redis_set_failed":
                     metrics.redis_set_failures += 1
+                    PRODUCER_FAILURES_TOTAL.labels(stage="redis_set").inc()
                 elif reason == "queue_push_failed":
                     metrics.queue_push_failures += 1
+                    PRODUCER_FAILURES_TOTAL.labels(stage="queue_push").inc()
             else:
                 metrics.published_frames += 1
+                PRODUCER_FRAMES_PUBLISHED_TOTAL.inc()
 
             frame_id += 1
 
@@ -582,6 +646,23 @@ def validate_producer_config() -> None:
     )
 
 
+def _start_metrics_server() -> None:
+    try:
+        start_http_server(CONFIG.producer_metrics_port)
+        logger.info(
+            "Prometheus metrics server started on port %d",
+            CONFIG.producer_metrics_port,
+            extra=_log_extra("producer.metrics.server_started", port=CONFIG.producer_metrics_port),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Prometheus metrics server could not start on port %d: %s",
+            CONFIG.producer_metrics_port,
+            exc,
+            extra=_log_extra("producer.metrics.server_failed", port=CONFIG.producer_metrics_port),
+        )
+
+
 def run_producer():
     """
     Entry point for producer execution.
@@ -590,6 +671,7 @@ def run_producer():
     - sample_files: reads indexed files from disk and replays them.
     - livestream: reads frames continuously from a live source.
     """
+    _start_metrics_server()
     validate_producer_config()
 
     with redis.Redis(
@@ -617,6 +699,7 @@ def run_producer():
                 raise ValueError(f"Unsupported PRODUCER_SOURCE_MODE: {CONFIG.producer_source_mode}")
 
         except redis.ConnectionError:
+            PRODUCER_FAILURES_TOTAL.labels(stage="redis").inc()
             logger.error(
                 "Could not connect to Redis. Is the Docker container running?",
                 extra=_log_extra("producer.redis.connect_failed"),

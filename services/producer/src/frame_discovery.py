@@ -11,6 +11,7 @@ Behavior:
 from pathlib import Path
 import sys
 from dataclasses import dataclass
+from typing import Any
 
 # Support both direct-script and module execution.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -21,10 +22,19 @@ if str(SHARED_SRC) not in sys.path:
     sys.path.insert(0, str(SHARED_SRC))
 
 from platform_shared.config import load_service_config
-from platform_shared.observability.logging import get_logger, init_json_logging
+from platform_shared.observability.logging import get_logger
 
 CONFIG = load_service_config(caller_file=__file__)
 logger = get_logger("Producer.FrameDiscovery")
+
+
+def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"event": event}
+    for key, value in fields.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
 
 @dataclass(frozen=True)
 class FrameRecord:
@@ -46,7 +56,17 @@ def discover_frames() -> list[FrameRecord]:
     for camera_dir in CONFIG.producer_camera_dirs:
         camera_path = sample_root / camera_dir
         matched_frames = list(camera_path.glob(CONFIG.producer_file_glob))
-        logger.info(f"Discovered {len(matched_frames)} candidate frames in {camera_path}")
+        logger.info(
+            "Discovered %d candidate frames in %s",
+            len(matched_frames),
+            camera_path,
+            extra=_log_extra(
+                "producer.frame_discovery.camera_scanned",
+                source_id=camera_dir,
+                camera_path=str(camera_path),
+                candidates=len(matched_frames),
+            ),
+        )
         frame_paths.extend(matched_frames)
 
     if not frame_paths:
@@ -61,7 +81,15 @@ def discover_frames() -> list[FrameRecord]:
             valid_with_ts.append((ts, frame))
         except ValueError as exc:
             invalid_count += 1
-            logger.warning(str(exc))
+            logger.warning(
+                "Invalid timestamp for frame: %s",
+                frame,
+                extra=_log_extra(
+                    "producer.frame_discovery.invalid_timestamp",
+                    path=str(frame),
+                    error_message=str(exc),
+                ),
+            )
 
     if not valid_with_ts:
         raise ValueError("No valid frames found after timestamp parsing.")
@@ -75,6 +103,12 @@ def discover_frames() -> list[FrameRecord]:
         len(frame_paths),
         len(sorted_frames),
         invalid_count,
+        extra=_log_extra(
+            "producer.frame_discovery.complete",
+            total_candidates=len(frame_paths),
+            valid=len(sorted_frames),
+            invalid=invalid_count,
+        ),
     )
     return sorted_frames
 
@@ -114,11 +148,3 @@ def parse_capture_timestamp(frame_path: Path) -> int:
     if not timestamp_str.isdigit():
         raise ValueError(f"Failed to parse numeric timestamp from: {frame_path}")
     return int(timestamp_str)
-
-if __name__ == "__main__":
-    init_json_logging(service_name="producer", log_level=CONFIG.log_level)
-    try:
-        frames = discover_frames()
-        logger.info(f"Total frames discovered: {len(frames)}")
-    except Exception as exc:
-        logger.error(f"Configuration validation or frame discovery failed: {exc}")

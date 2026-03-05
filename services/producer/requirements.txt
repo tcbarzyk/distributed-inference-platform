@@ -3,3 +3,4 @@ opencv-python==4.13.0.92
 -e git+https://github.com/tcbarzyk/distributed-inference-platform.git@158af3495e5efa49c682d9fc940a92d5c803528c#egg=platform_shared&subdirectory=libs\platform_shared
 python-dotenv==1.2.1
 redis==7.2.1
+prometheus-client==0.22.1

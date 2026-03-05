@@ -37,10 +37,13 @@ services:
     env_file: .env
     environment:
       REDIS_HOST: redis
+      PRODUCER_METRICS_PORT: ${PRODUCER_METRICS_PORT:-9101}
     depends_on:
       - redis
     volumes:
       - ./services/producer/sample-video:/app/services/producer/sample-video:ro
+    ports:
+      - "9101:9101"
     restart: unless-stopped
 
   worker:
@@ -51,6 +54,7 @@ services:
     environment:
       REDIS_HOST: redis
       POSTGRES_HOST: postgres
+      WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9102}
     depends_on:
       - redis
       - postgres
@@ -59,3 +63,21 @@ services:
       - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics
     restart: unless-stopped
     gpus: all
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    user: root
+    depends_on:
+      - api
+      - producer
+      - worker
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./services/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:

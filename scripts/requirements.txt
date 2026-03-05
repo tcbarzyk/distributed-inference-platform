@@ -1,0 +1,14 @@
+# Minimal requirements for scripts/baseline.py and scripts/stress.py.
+#
+# baseline.py uses stdlib only — no packages required.
+#
+# stress.py needs:
+#   - redis         (worker flood phase — pushing jobs directly to Redis)
+#   - opencv-python (optional — better synthetic frames; falls back to a 1x1 JPEG stub)
+#   - numpy         (pulled in by opencv)
+#
+# Alternatively, activate the producer venv which already has all of these.
+
+redis==7.2.1
+opencv-python==4.13.0.92
+numpy==2.4.2

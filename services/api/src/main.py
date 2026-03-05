@@ -16,6 +16,7 @@ from uuid import uuid4
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -24,6 +25,14 @@ import time
 from platform_shared.config import load_service_config
 from platform_shared.models import ResultModel, SourceModel
 from platform_shared.observability.logging import get_logger, init_json_logging
+from platform_shared.observability.metrics import (
+    HTTP_ROUTE_LABELS,
+    HTTP_STATUS_LABELS,
+    MetricNames,
+    make_counter,
+    make_histogram,
+    sanitize_label_value,
+)
 
 from .contracts import (
     ErrorResponse,
@@ -43,6 +52,16 @@ app = FastAPI(title="Distributed Inference Platform API", version="0.1.0")
 CONFIG = load_service_config(caller_file=__file__)
 init_json_logging(service_name="api", log_level=CONFIG.log_level)
 logger = get_logger("API")
+API_REQUESTS_TOTAL = make_counter(
+    MetricNames.API_REQUESTS_TOTAL,
+    "Total HTTP requests handled by API.",
+    labelnames=HTTP_STATUS_LABELS,
+)
+API_REQUEST_DURATION_MS = make_histogram(
+    MetricNames.API_REQUEST_DURATION_MS,
+    "API HTTP request duration in milliseconds.",
+    labelnames=HTTP_ROUTE_LABELS,
+)
 
 
 def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
@@ -68,6 +87,19 @@ async def request_context_middleware(request: Request, call_next):
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         status_code = response.status_code if response is not None else 500
+        route_template = request.url.path
+        route = request.scope.get("route")
+        if route is not None and getattr(route, "path", None):
+            route_template = str(route.path)
+        route_label = sanitize_label_value(route_template)
+        method_label = sanitize_label_value(request.method)
+        status_label = sanitize_label_value(status_code)
+        API_REQUESTS_TOTAL.labels(
+            route=route_label,
+            method=method_label,
+            status_code=status_label,
+        ).inc()
+        API_REQUEST_DURATION_MS.labels(route=route_label, method=method_label).observe(elapsed_ms)
         if response is not None:
             response.headers["X-Request-ID"] = request_id
         logger.info(
@@ -423,6 +455,12 @@ async def list_results(
 async def root() -> RootResponse:
     logger.debug("Root endpoint called.", extra=_log_extra("api.root.called"))
     return RootResponse(message="API online")
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    payload = generate_latest()
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
 
 
 def _check_redis() -> tuple[bool, str]:

@@ -19,6 +19,7 @@ from typing import Any
 import cv2
 import numpy as np
 import redis
+from prometheus_client import start_http_server
 
 # Support both direct-script and module execution.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,6 +32,13 @@ if str(SHARED_SRC) not in sys.path:
 from inference import InferenceInput, get_model_device, load_model, run_inference
 from platform_shared.config import load_service_config
 from platform_shared.observability.logging import get_logger, init_json_logging
+from platform_shared.observability.metrics import (
+    MetricNames,
+    STAGE_LABELS,
+    make_counter,
+    make_gauge,
+    make_histogram,
+)
 from platform_shared.schemas import Detection, InferenceResult, QueueJob
 from results import publish_result, encode_live_frame_jpeg
 
@@ -39,6 +47,36 @@ SCHEMA_VERSION = 1
 init_json_logging(service_name="worker", log_level=CONFIG.log_level)
 logger = get_logger("Worker")
 _LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
+
+WORKER_JOBS_POPPED_TOTAL = make_counter(
+    MetricNames.WORKER_JOBS_POPPED_TOTAL,
+    "Total jobs popped by worker.",
+)
+WORKER_JOBS_PROCESSED_TOTAL = make_counter(
+    MetricNames.WORKER_JOBS_PROCESSED_TOTAL,
+    "Total jobs successfully processed by worker.",
+)
+WORKER_FAILURES_TOTAL = make_counter(
+    MetricNames.WORKER_FAILURES_TOTAL,
+    "Total worker failures by stage.",
+    labelnames=STAGE_LABELS,
+)
+WORKER_QUEUE_LATENCY_MS = make_histogram(
+    MetricNames.WORKER_QUEUE_LATENCY_MS,
+    "Queue wait latency in milliseconds.",
+)
+WORKER_INFERENCE_DURATION_MS = make_histogram(
+    MetricNames.WORKER_INFERENCE_DURATION_MS,
+    "Model inference duration in milliseconds.",
+)
+WORKER_PIPELINE_DURATION_MS = make_histogram(
+    MetricNames.WORKER_PIPELINE_DURATION_MS,
+    "End-to-end pipeline duration in milliseconds.",
+)
+WORKER_QUEUE_DEPTH = make_gauge(
+    MetricNames.WORKER_QUEUE_DEPTH,
+    "Current queue depth seen by worker.",
+)
 
 
 def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
@@ -88,24 +126,6 @@ def _fmt_latency(value):
 def _avg(total: float, samples: int) -> float:
     """Safe average helper that avoids division by zero."""
     return (total / samples) if samples > 0 else 0.0
-
-
-def _log_progress(metrics: WorkerMetrics) -> None:
-    """Legacy progress logger retained for debugging/compatibility."""
-    logger.info(
-        (
-            "Worker progress | popped=%d processed_ok=%d invalid=%d "
-            "blob_misses=%d decode_failures=%d inference_failures=%d redis_errors=%d"
-        ),
-        metrics.jobs_popped,
-        metrics.processed_ok,
-        metrics.jobs_invalid,
-        metrics.blob_misses,
-        metrics.decode_failures,
-        metrics.inference_failures,
-        metrics.redis_errors,
-        extra=_log_extra("worker.progress"),
-    )
 
 
 def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) -> None:
@@ -197,6 +217,7 @@ def _decode_job_payload(job_raw: bytes, metrics: WorkerMetrics):
         job = QueueJob.from_json_bytes(job_raw)
     except ValueError as exc:
         metrics.jobs_invalid += 1
+        WORKER_FAILURES_TOTAL.labels(stage="decode").inc()
         if "frame_key" in str(exc):
             metrics.missing_frame_key += 1
         logger.error("Failed to decode queue job: %s", exc, extra=_log_extra("worker.job.decode_failed"))
@@ -212,6 +233,7 @@ def _fetch_frame_bytes(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
         frame_bytes = r.get(frame_key)
     except redis.RedisError as exc:
         metrics.redis_errors += 1
+        WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
         logger.error(
             "Redis GET failed for key=%s: %s",
             frame_key,
@@ -222,6 +244,7 @@ def _fetch_frame_bytes(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
 
     if frame_bytes is None:
         metrics.blob_misses += 1
+        WORKER_FAILURES_TOTAL.labels(stage="decode").inc()
         logger.warning(
             "Frame data missing or expired for key: %s",
             frame_key,
@@ -238,6 +261,7 @@ def _decode_image(frame_bytes: bytes, frame_id, source_id, metrics: WorkerMetric
     image = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
     if image is None:
         metrics.decode_failures += 1
+        WORKER_FAILURES_TOTAL.labels(stage="decode").inc()
         logger.error(
             "Failed to decode image for frame_id=%s source_id=%s",
             frame_id,
@@ -256,6 +280,7 @@ def _compute_queue_latency_ms(now_us: int, enqueued_at_us, metrics: WorkerMetric
         if queue_latency_ms >= 0:
             metrics.queue_latency_samples += 1
             metrics.queue_latency_total_ms += queue_latency_ms
+            WORKER_QUEUE_LATENCY_MS.observe(queue_latency_ms)
     return queue_latency_ms
 
 
@@ -273,6 +298,7 @@ def _run_inference_safe(inference_input: InferenceInput, model, frame_key: str, 
         inference_result = run_inference(inference_input, model)
     except Exception as exc:
         metrics.inference_failures += 1
+        WORKER_FAILURES_TOTAL.labels(stage="inference").inc()
         logger.exception(
             "Inference failed for key=%s: %s",
             frame_key,
@@ -343,6 +369,7 @@ def _publish_result_safe(
         )
     except Exception as exc:
         metrics.publish_failures += 1
+        WORKER_FAILURES_TOTAL.labels(stage="publish").inc()
         logger.exception(
             "Result publish failed for frame_id=%s: %s",
             inference_result.frame_id,
@@ -380,6 +407,7 @@ def _delete_frame_key(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
             metrics.deleted_blobs += 1
     except redis.RedisError as exc:
         metrics.redis_errors += 1
+        WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
         logger.error(
             "Redis DEL failed for key=%s: %s",
             frame_key,
@@ -388,8 +416,26 @@ def _delete_frame_key(r: redis.Redis, frame_key: str, metrics: WorkerMetrics):
         )
 
 
+def _start_metrics_server() -> None:
+    try:
+        start_http_server(CONFIG.worker_metrics_port)
+        logger.info(
+            "Prometheus metrics server started on port %d",
+            CONFIG.worker_metrics_port,
+            extra=_log_extra("worker.metrics.server_started", port=CONFIG.worker_metrics_port),
+        )
+    except OSError as exc:
+        logger.warning(
+            "Prometheus metrics server could not start on port %d: %s",
+            CONFIG.worker_metrics_port,
+            exc,
+            extra=_log_extra("worker.metrics.server_failed", port=CONFIG.worker_metrics_port),
+        )
+
+
 def run_worker():
     """Main worker loop: consume jobs, process frames, publish results, log metrics."""
+    _start_metrics_server()
     metrics = WorkerMetrics(start_time_s=time.time())
     metrics.last_summary_log_s = metrics.start_time_s
     logger.info(
@@ -446,13 +492,19 @@ def run_worker():
                     result = r.brpop(CONFIG.queue_name, timeout=0)
                 except redis.RedisError as exc:
                     metrics.redis_errors += 1
+                    WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
                     logger.error("Redis BRPOP failed: %s", exc, extra=_log_extra("worker.queue.pop_failed"))
                     continue
 
                 if not result:
                     continue
                 metrics.jobs_popped += 1
+                WORKER_JOBS_POPPED_TOTAL.inc()
                 _, job_raw = result
+                try:
+                    WORKER_QUEUE_DEPTH.set(float(r.llen(CONFIG.queue_name)))
+                except redis.RedisError:
+                    pass
 
                 job = _decode_job_payload(job_raw, metrics)
                 if job is None:
@@ -506,6 +558,7 @@ def run_worker():
                     inference_result = _build_result_model(job, inference_result_raw, now_us)
                 except ValueError as exc:
                     metrics.publish_failures += 1
+                    WORKER_FAILURES_TOTAL.labels(stage="publish").inc()
                     logger.error(
                         "Failed to build inference result schema: %s",
                         exc,
@@ -520,6 +573,7 @@ def run_worker():
 
 
                 metrics.processed_ok += 1
+                WORKER_JOBS_PROCESSED_TOTAL.inc()
                 logger.debug(
                     "Inference result: status=%s model=%s inference_ms=%.3f pipeline_ms=%.3f",
                     inference_result.status,
@@ -538,6 +592,8 @@ def run_worker():
 
                 _publish_result_safe(r=r, image=image, inference_result=inference_result, metrics=metrics)
                 _delete_frame_key(r, job.frame_key, metrics)
+                WORKER_INFERENCE_DURATION_MS.observe(float(inference_result.inference_ms))
+                WORKER_PIPELINE_DURATION_MS.observe(float(inference_result.pipeline_ms))
 
                 _maybe_log_interval_summary(metrics)
 
@@ -588,6 +644,7 @@ def _publish_live_frame_safe(
     )
     if jpeg_bytes is None:
         metrics.live_frame_encode_failures += 1
+        WORKER_FAILURES_TOTAL.labels(stage="publish").inc()
         logger.error(
             "Failed to encode live frame JPEG for frame_id=%s",
             inference_result.frame_id,
@@ -648,6 +705,7 @@ def _publish_live_frame_safe(
             except redis.RedisError as exc:
                 metrics.redis_errors += 1
                 metrics.mjpeg_publish_errors += 1
+                WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
                 logger.warning(
                     "MJPEG publish failed source=%s frame_id=%s channel=%s: %s",
                     inference_result.source_id,
@@ -666,6 +724,7 @@ def _publish_live_frame_safe(
     except redis.RedisError as exc:
         metrics.redis_errors += 1
         metrics.live_frame_write_failures += 1
+        WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
         logger.warning(
             "Live frame Redis publish failed source=%s: %s",
             inference_result.source_id,

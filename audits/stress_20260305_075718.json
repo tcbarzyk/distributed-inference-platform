@@ -1,0 +1,235 @@
+{
+  "captured_at_utc": "2026-03-05T07:57:18.105075+00:00",
+  "config": {
+    "api_url": "http://localhost:8000",
+    "prom_url": "http://localhost:9090",
+    "redis_host": "localhost",
+    "redis_port": 6380,
+    "redis_password": null,
+    "queue_name": "video_stream",
+    "frame_key_prefix": "frame",
+    "frame_ttl": 15,
+    "timeout": 5.0,
+    "worker_flood": false,
+    "api_hammer": false,
+    "flood_duration": 45.0,
+    "flood_workers": 4,
+    "flood_fps": null,
+    "hammer_duration": 30.0,
+    "hammer_concurrency": 20
+  },
+  "worker_flood": {
+    "source_id": "stress_20260305_075719",
+    "duration_actual_s": 45.2,
+    "num_threads": 4,
+    "target_fps_per_thread": null,
+    "frame_bytes": 689,
+    "enqueued_total": 162546,
+    "enqueue_fps_avg": 3584.73,
+    "redis_errors": 0,
+    "interval_samples": [
+      {
+        "elapsed_s": 5.0,
+        "enqueued_total": 16534,
+        "enqueue_fps": 3296.9,
+        "queue_depth": 10553.0,
+        "worker_processed_rate_fps": 12.84051362054482,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 10.0,
+        "enqueued_total": 33376,
+        "enqueue_fps": 3317.0,
+        "queue_depth": 26667.0,
+        "worker_processed_rate_fps": 14.68,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 15.1,
+        "enqueued_total": 48572,
+        "enqueue_fps": 3221.4,
+        "queue_depth": 41066.0,
+        "worker_processed_rate_fps": 16.160646425857035,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 20.1,
+        "enqueued_total": 67261,
+        "enqueue_fps": 3347.3,
+        "queue_depth": 52922.0,
+        "worker_processed_rate_fps": 16.040641625665025,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 25.1,
+        "enqueued_total": 85555,
+        "enqueue_fps": 3407.3,
+        "queue_depth": 60037.0,
+        "worker_processed_rate_fps": 13.641091287302983,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 30.1,
+        "enqueued_total": 105010,
+        "enqueue_fps": 3485.8,
+        "queue_depth": 67666.0,
+        "worker_processed_rate_fps": 10.201224146897628,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 35.1,
+        "enqueued_total": 123673,
+        "enqueue_fps": 3517.8,
+        "queue_depth": 74882.0,
+        "worker_processed_rate_fps": 5.960476838147052,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 40.2,
+        "enqueued_total": 143197,
+        "enqueue_fps": 3563.3,
+        "queue_depth": 82520.0,
+        "worker_processed_rate_fps": 2.2400896035841433,
+        "redis_errors": 0
+      },
+      {
+        "elapsed_s": 45.2,
+        "enqueued_total": 162540,
+        "enqueue_fps": 3595.8,
+        "queue_depth": 89896.0,
+        "worker_processed_rate_fps": 0.0,
+        "redis_errors": 0
+      }
+    ],
+    "prom_before": {
+      "ts": 1772697439.07167,
+      "producer_published_rate": 36.401985562848886,
+      "producer_dropped_rate": 0.0,
+      "worker_popped_rate": 11.43698747204393,
+      "worker_processed_rate": 11.43698747204393,
+      "worker_failures_rate": null,
+      "worker_queue_depth": 0.0,
+      "worker_inference_p50_ms": 19.345238095238095,
+      "worker_inference_p95_ms": 41.453488372093005,
+      "worker_pipeline_p95_ms": 47.259887005649716,
+      "api_request_rate": 0.20002182056224316,
+      "api_duration_p50_ms": null,
+      "api_duration_p95_ms": null
+    },
+    "prom_after": {
+      "ts": 1772697484.3783004,
+      "producer_published_rate": 29.05718701700155,
+      "producer_dropped_rate": 0.0,
+      "worker_popped_rate": 406.0403294725167,
+      "worker_processed_rate": 8.364092586868376,
+      "worker_failures_rate": 0.0,
+      "worker_queue_depth": 89896.0,
+      "worker_inference_p50_ms": 22.545454545454547,
+      "worker_inference_p95_ms": 47.62569832402235,
+      "worker_pipeline_p95_ms": 47.9368932038835,
+      "api_request_rate": 0.20001090968598287,
+      "api_duration_p50_ms": null,
+      "api_duration_p95_ms": null
+    }
+  },
+  "api_hammer": {
+    "duration_actual_s": 30.08,
+    "concurrency": 20,
+    "endpoints": [
+      "/",
+      "/health/live",
+      "/health/ready",
+      "/results",
+      "/results?limit=1"
+    ],
+    "completed_requests": 5240,
+    "errors": 0,
+    "rps_avg": 174.21,
+    "status_counts": {
+      "200": 5240
+    },
+    "latency_ms": {
+      "min": 5.334299989044666,
+      "mean": 114.66416243996066,
+      "median": 80.49279998522252,
+      "p95": 280.9040750260465,
+      "p99": 370.37661999696843,
+      "max": 447.2554000094533,
+      "stdev": 78.3491694578191
+    },
+    "interval_samples": [
+      {
+        "elapsed_s": 5.0,
+        "completed": 783,
+        "errors": 0,
+        "rps": 156.1,
+        "p95_ms": 336.7
+      },
+      {
+        "elapsed_s": 10.0,
+        "completed": 1624,
+        "errors": 0,
+        "rps": 162.1,
+        "p95_ms": 300.1
+      },
+      {
+        "elapsed_s": 15.0,
+        "completed": 2480,
+        "errors": 0,
+        "rps": 165.2,
+        "p95_ms": 293.1
+      },
+      {
+        "elapsed_s": 20.0,
+        "completed": 3360,
+        "errors": 0,
+        "rps": 167.9,
+        "p95_ms": 286.4
+      },
+      {
+        "elapsed_s": 25.0,
+        "completed": 4284,
+        "errors": 0,
+        "rps": 171.3,
+        "p95_ms": 285.5
+      },
+      {
+        "elapsed_s": 30.0,
+        "completed": 5220,
+        "errors": 0,
+        "rps": 173.8,
+        "p95_ms": 280.9
+      }
+    ],
+    "prom_before": {
+      "ts": 1772697484.5114262,
+      "producer_published_rate": 29.057187017001542,
+      "producer_dropped_rate": 0.0,
+      "worker_popped_rate": 406.0403294725167,
+      "worker_processed_rate": 8.364092586868376,
+      "worker_failures_rate": 0.0,
+      "worker_queue_depth": 89896.0,
+      "worker_inference_p50_ms": 22.627272727272725,
+      "worker_inference_p95_ms": 48.15308988764045,
+      "worker_pipeline_p95_ms": 47.9368932038835,
+      "api_request_rate": 0.20001090968598287,
+      "api_duration_p50_ms": 3.0,
+      "api_duration_p95_ms": null
+    },
+    "prom_after": {
+      "ts": 1772697514.7290738,
+      "producer_published_rate": 31.82049603607535,
+      "producer_dropped_rate": 0.0,
+      "worker_popped_rate": 850.2618372245254,
+      "worker_processed_rate": 0.0,
+      "worker_failures_rate": 0.0,
+      "worker_queue_depth": 15486.0,
+      "worker_inference_p50_ms": null,
+      "worker_inference_p95_ms": null,
+      "worker_pipeline_p95_ms": null,
+      "api_request_rate": 0.20001454651247366,
+      "api_duration_p50_ms": null,
+      "api_duration_p95_ms": 23.634892086330936
+    }
+  }
+}
