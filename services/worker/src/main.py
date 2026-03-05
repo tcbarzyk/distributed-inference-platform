@@ -700,11 +700,11 @@ def _publish_live_frame_safe(
 
 
 def _publish_mjpeg_safe(
-  *,
-  r: redis.Redis,
-  inference_result: InferenceResult,
-  image,
-  metrics: WorkerMetrics,
+    *,
+    r: redis.Redis,
+    inference_result: InferenceResult,
+    image,
+    metrics: WorkerMetrics,
 ) -> None:
     if not CONFIG.worker_mjpeg_publish_enabled:
         return
@@ -720,6 +720,17 @@ def _publish_mjpeg_safe(
     )
     if jpeg_bytes is None:
         metrics.mjpeg_publish_errors += 1
+        WORKER_FAILURES_TOTAL.labels(stage="publish").inc()
+        logger.warning(
+            "MJPEG encode failed source=%s frame_id=%s",
+            inference_result.source_id,
+            inference_result.frame_id,
+            extra=_log_extra(
+                "worker.mjpeg.encode_failed",
+                source_id=inference_result.source_id,
+                frame_id=inference_result.frame_id,
+            ),
+        )
         return
 
     channel = _mjpeg_channel_for_source(inference_result.source_id)
