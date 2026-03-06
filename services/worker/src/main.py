@@ -10,6 +10,7 @@ Flow:
 """
 
 import json
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -47,6 +48,9 @@ SCHEMA_VERSION = 1
 init_json_logging(service_name="worker", log_level=CONFIG.log_level)
 logger = get_logger("Worker")
 _LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
+_REDIS_BRPOP_BACKOFF_BASE_S = 1.0
+_REDIS_BRPOP_BACKOFF_MAX_S = 30.0
+_REDIS_BRPOP_JITTER_FACTOR = 0.2
 
 WORKER_JOBS_POPPED_TOTAL = make_counter(
     MetricNames.WORKER_JOBS_POPPED_TOTAL,
@@ -126,6 +130,26 @@ def _fmt_latency(value):
 def _avg(total: float, samples: int) -> float:
     """Safe average helper that avoids division by zero."""
     return (total / samples) if samples > 0 else 0.0
+
+
+def _bound_redis_brpop_backoff_s(backoff_s: float) -> float:
+    """Clamp Redis BRPOP backoff into configured base/max range."""
+    return max(_REDIS_BRPOP_BACKOFF_BASE_S, min(backoff_s, _REDIS_BRPOP_BACKOFF_MAX_S))
+
+
+def _compute_redis_brpop_retry_sleep_s(backoff_s: float) -> float:
+    """Return a jittered retry sleep for Redis BRPOP errors."""
+    bounded_backoff_s = _bound_redis_brpop_backoff_s(backoff_s)
+    jitter_multiplier = 1.0 + random.uniform(-_REDIS_BRPOP_JITTER_FACTOR, _REDIS_BRPOP_JITTER_FACTOR)
+    return min(_REDIS_BRPOP_BACKOFF_MAX_S, bounded_backoff_s * jitter_multiplier)
+
+
+def _advance_redis_brpop_backoff_s(backoff_s: float, *, had_error: bool) -> float:
+    """Return next Redis BRPOP retry backoff (doubles on error, resets on success)."""
+    if not had_error:
+        return _REDIS_BRPOP_BACKOFF_BASE_S
+    bounded_backoff_s = _bound_redis_brpop_backoff_s(backoff_s)
+    return min(bounded_backoff_s * 2.0, _REDIS_BRPOP_BACKOFF_MAX_S)
 
 
 def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) -> None:
@@ -485,6 +509,7 @@ def run_worker():
             extra=_log_extra("worker.config.mjpeg"),
         )
 
+        redis_brpop_backoff_s = _REDIS_BRPOP_BACKOFF_BASE_S
         try:
             while True:
                 _maybe_log_interval_summary(metrics)
@@ -493,8 +518,17 @@ def run_worker():
                 except redis.RedisError as exc:
                     metrics.redis_errors += 1
                     WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
-                    logger.error("Redis BRPOP failed: %s", exc, extra=_log_extra("worker.queue.pop_failed"))
+                    sleep_s = _compute_redis_brpop_retry_sleep_s(redis_brpop_backoff_s)
+                    logger.error(
+                        "Redis BRPOP failed: %s. Backing off for %.2fs",
+                        exc,
+                        sleep_s,
+                        extra=_log_extra("worker.queue.pop_failed", retry_in_s=sleep_s),
+                    )
+                    time.sleep(sleep_s)
+                    redis_brpop_backoff_s = _advance_redis_brpop_backoff_s(redis_brpop_backoff_s, had_error=True)
                     continue
+                redis_brpop_backoff_s = _advance_redis_brpop_backoff_s(redis_brpop_backoff_s, had_error=False)
 
                 if not result:
                     continue
