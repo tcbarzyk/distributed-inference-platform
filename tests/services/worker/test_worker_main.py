@@ -146,3 +146,25 @@ def test_publish_mjpeg_safe_publishes_bytes(monkeypatch: pytest.MonkeyPatch) -> 
     assert metrics.mjpeg_publish_attempted == 1
     assert metrics.mjpeg_publish_sent == 1
     assert fake_redis.calls[0][0] == "live.frames.cam-1"
+
+
+def test_compute_redis_brpop_retry_sleep_s_applies_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: 0.2)
+    assert worker_main._compute_redis_brpop_retry_sleep_s(1.0) == pytest.approx(1.2)
+
+
+def test_compute_redis_brpop_retry_sleep_s_bounds_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: -0.2)
+    assert worker_main._compute_redis_brpop_retry_sleep_s(0.1) == pytest.approx(0.8)
+
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: 0.2)
+    assert worker_main._compute_redis_brpop_retry_sleep_s(30.0) == pytest.approx(30.0)
+
+
+def test_advance_redis_brpop_backoff_s_doubles_and_caps() -> None:
+    assert worker_main._advance_redis_brpop_backoff_s(1.0, had_error=True) == pytest.approx(2.0)
+    assert worker_main._advance_redis_brpop_backoff_s(20.0, had_error=True) == pytest.approx(30.0)
+
+
+def test_advance_redis_brpop_backoff_s_resets_on_success() -> None:
+    assert worker_main._advance_redis_brpop_backoff_s(30.0, had_error=False) == pytest.approx(1.0)
