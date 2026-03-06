@@ -11,6 +11,7 @@ Flow:
 
 import json
 import random
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ CONFIG = load_service_config(caller_file=__file__)
 SCHEMA_VERSION = 1
 init_json_logging(service_name="worker", log_level=CONFIG.log_level)
 logger = get_logger("Worker")
+_SHUTDOWN_REQUESTED = False
 _LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
 _REDIS_BRPOP_BACKOFF_BASE_S = 1.0
 _REDIS_BRPOP_BACKOFF_MAX_S = 30.0
@@ -89,6 +91,25 @@ def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
         if value is not None:
             payload[key] = value
     return payload
+
+
+def _request_shutdown(signum: int, _frame) -> None:
+    """Signal handler: request graceful loop stop at the next checkpoint."""
+    del _frame
+    global _SHUTDOWN_REQUESTED
+    if _SHUTDOWN_REQUESTED:
+        return
+    _SHUTDOWN_REQUESTED = True
+    logger.info(
+        "Shutdown signal received (signal=%s). Finishing in-progress frame...",
+        signum,
+        extra=_log_extra("worker.shutdown.requested", signal=signum),
+    )
+
+
+def _register_signal_handlers() -> None:
+    """Register service-level POSIX signal handlers."""
+    signal.signal(signal.SIGTERM, _request_shutdown)
 
 
 @dataclass
@@ -459,6 +480,9 @@ def _start_metrics_server() -> None:
 
 def run_worker():
     """Main worker loop: consume jobs, process frames, publish results, log metrics."""
+    global _SHUTDOWN_REQUESTED
+    _SHUTDOWN_REQUESTED = False
+    _register_signal_handlers()
     _start_metrics_server()
     metrics = WorkerMetrics(start_time_s=time.time())
     metrics.last_summary_log_s = metrics.start_time_s
@@ -511,10 +535,10 @@ def run_worker():
 
         redis_brpop_backoff_s = _REDIS_BRPOP_BACKOFF_BASE_S
         try:
-            while True:
+            while not _SHUTDOWN_REQUESTED:
                 _maybe_log_interval_summary(metrics)
                 try:
-                    result = r.brpop(CONFIG.queue_name, timeout=0)
+                    result = r.brpop(CONFIG.queue_name, timeout=1)
                 except redis.RedisError as exc:
                     metrics.redis_errors += 1
                     WORKER_FAILURES_TOTAL.labels(stage="redis").inc()
@@ -632,6 +656,8 @@ def run_worker():
 
                 _maybe_log_interval_summary(metrics)
 
+            if _SHUTDOWN_REQUESTED:
+                logger.info("Worker shutting down...", extra=_log_extra("worker.shutdown"))
         except KeyboardInterrupt:
             logger.info("Worker shutting down...", extra=_log_extra("worker.shutdown"))
         finally:
