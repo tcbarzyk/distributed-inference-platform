@@ -49,9 +49,9 @@ logger = get_logger("Producer")
 _SHUTDOWN_REQUESTED = False
 
 
-def _request_shutdown(signum: int, _frame) -> None:
+def _request_shutdown(signum: int, _stack_frame) -> None:
     """Signal handler: request a graceful stop at the next loop checkpoint."""
-    del _frame
+    del _stack_frame
     global _SHUTDOWN_REQUESTED
     if _SHUTDOWN_REQUESTED:
         return

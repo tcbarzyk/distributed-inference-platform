@@ -93,9 +93,9 @@ def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
     return payload
 
 
-def _request_shutdown(signum: int, _frame) -> None:
+def _request_shutdown(signum: int, _stack_frame) -> None:
     """Signal handler: request graceful loop stop at the next checkpoint."""
-    del _frame
+    del _stack_frame
     global _SHUTDOWN_REQUESTED
     if _SHUTDOWN_REQUESTED:
         return
@@ -538,6 +538,8 @@ def run_worker():
             while not _SHUTDOWN_REQUESTED:
                 _maybe_log_interval_summary(metrics)
                 try:
+                    # Use a finite timeout so SIGTERM-triggered shutdown requests can
+                    # be observed without waiting forever on a blocking BRPOP.
                     result = r.brpop(CONFIG.queue_name, timeout=1)
                 except redis.RedisError as exc:
                     metrics.redis_errors += 1

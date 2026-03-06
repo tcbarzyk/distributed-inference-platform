@@ -74,9 +74,9 @@ def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
     return payload
 
 
-def _request_shutdown(signum: int, _frame) -> None:
+def _request_shutdown(signum: int, _stack_frame) -> None:
     """Signal handler: request graceful stop for long-lived streaming loops."""
-    del _frame
+    del _stack_frame
     global _SHUTDOWN_REQUESTED
     if _SHUTDOWN_REQUESTED:
         return
