@@ -50,6 +50,7 @@ logger = get_logger("Worker")
 _LAST_MJPEG_PUBLISH_BY_SOURCE: dict[str, float] = {}
 _REDIS_BRPOP_BACKOFF_BASE_S = 1.0
 _REDIS_BRPOP_BACKOFF_MAX_S = 30.0
+_REDIS_BRPOP_JITTER_FACTOR = 0.2
 
 WORKER_JOBS_POPPED_TOTAL = make_counter(
     MetricNames.WORKER_JOBS_POPPED_TOTAL,
@@ -131,18 +132,23 @@ def _avg(total: float, samples: int) -> float:
     return (total / samples) if samples > 0 else 0.0
 
 
+def _bound_redis_brpop_backoff_s(backoff_s: float) -> float:
+    """Clamp Redis BRPOP backoff into configured base/max range."""
+    return max(_REDIS_BRPOP_BACKOFF_BASE_S, min(backoff_s, _REDIS_BRPOP_BACKOFF_MAX_S))
+
+
 def _compute_redis_brpop_retry_sleep_s(backoff_s: float) -> float:
     """Return a jittered retry sleep for Redis BRPOP errors."""
-    bounded_backoff_s = max(_REDIS_BRPOP_BACKOFF_BASE_S, min(backoff_s, _REDIS_BRPOP_BACKOFF_MAX_S))
-    jitter_multiplier = 1.0 + random.uniform(-0.2, 0.2)
-    return min(_REDIS_BRPOP_BACKOFF_MAX_S, max(0.0, bounded_backoff_s * jitter_multiplier))
+    bounded_backoff_s = _bound_redis_brpop_backoff_s(backoff_s)
+    jitter_multiplier = 1.0 + random.uniform(-_REDIS_BRPOP_JITTER_FACTOR, _REDIS_BRPOP_JITTER_FACTOR)
+    return min(_REDIS_BRPOP_BACKOFF_MAX_S, bounded_backoff_s * jitter_multiplier)
 
 
 def _advance_redis_brpop_backoff_s(backoff_s: float, *, had_error: bool) -> float:
     """Return next Redis BRPOP retry backoff (doubles on error, resets on success)."""
     if not had_error:
         return _REDIS_BRPOP_BACKOFF_BASE_S
-    bounded_backoff_s = max(_REDIS_BRPOP_BACKOFF_BASE_S, min(backoff_s, _REDIS_BRPOP_BACKOFF_MAX_S))
+    bounded_backoff_s = _bound_redis_brpop_backoff_s(backoff_s)
     return min(bounded_backoff_s * 2.0, _REDIS_BRPOP_BACKOFF_MAX_S)
 
 

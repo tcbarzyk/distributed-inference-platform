@@ -149,15 +149,15 @@ def test_publish_mjpeg_safe_publishes_bytes(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_compute_redis_brpop_retry_sleep_s_applies_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: 0.2)
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: worker_main._REDIS_BRPOP_JITTER_FACTOR)
     assert worker_main._compute_redis_brpop_retry_sleep_s(1.0) == pytest.approx(1.2)
 
 
 def test_compute_redis_brpop_retry_sleep_s_bounds_and_caps(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: -0.2)
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: -worker_main._REDIS_BRPOP_JITTER_FACTOR)
     assert worker_main._compute_redis_brpop_retry_sleep_s(0.1) == pytest.approx(0.8)
 
-    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: 0.2)
+    monkeypatch.setattr(worker_main.random, "uniform", lambda _low, _high: worker_main._REDIS_BRPOP_JITTER_FACTOR)
     assert worker_main._compute_redis_brpop_retry_sleep_s(30.0) == pytest.approx(30.0)
 
 
