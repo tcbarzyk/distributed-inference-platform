@@ -10,6 +10,7 @@ Current responsibilities:
 from __future__ import annotations
 
 import json
+import signal
 from typing import Any, Generator
 from uuid import uuid4
 
@@ -52,6 +53,7 @@ app = FastAPI(title="Distributed Inference Platform API", version="0.1.0")
 CONFIG = load_service_config(caller_file=__file__)
 init_json_logging(service_name="api", log_level=CONFIG.log_level)
 logger = get_logger("API")
+_SHUTDOWN_REQUESTED = False
 API_REQUESTS_TOTAL = make_counter(
     MetricNames.API_REQUESTS_TOTAL,
     "Total HTTP requests handled by API.",
@@ -70,6 +72,28 @@ def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
         if value is not None:
             payload[key] = value
     return payload
+
+
+def _request_shutdown(signum: int, _stack_frame) -> None:
+    """Signal handler: request graceful stop for long-lived streaming loops."""
+    del _stack_frame
+    global _SHUTDOWN_REQUESTED
+    if _SHUTDOWN_REQUESTED:
+        return
+    _SHUTDOWN_REQUESTED = True
+    logger.info(
+        "Shutdown signal received (signal=%s). Closing active streams...",
+        signum,
+        extra=_log_extra("api.shutdown.requested", signal=signum),
+    )
+
+
+def _register_signal_handlers() -> None:
+    """Register service-level POSIX signal handlers."""
+    signal.signal(signal.SIGTERM, _request_shutdown)
+
+
+_register_signal_handlers()
 
 
 @app.middleware("http")
@@ -349,7 +373,7 @@ def _iter_mjpeg_stream(source_id: str) -> Generator[bytes, None, None]:
             extra=_log_extra("api.mjpeg.subscribed", source_id=source_id, channel=channel),
         )
 
-        while True:
+        while not _SHUTDOWN_REQUESTED:
             message = pubsub.get_message(timeout=1.0)
             now_s = time.monotonic()
             if message is not None and message.get("type") == "message":

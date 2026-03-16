@@ -99,3 +99,30 @@ def test_mjpeg_frame_chunk_format() -> None:
     assert chunk.startswith(b"--frame\r\n")
     assert b"Content-Type: image/jpeg\r\n" in chunk
     assert chunk.endswith(b"\r\n")
+
+
+def test_iter_mjpeg_stream_stops_when_shutdown_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakePubSub:
+        def __init__(self):
+            self.message_calls = 0
+
+        def subscribe(self, _channel: str):
+            return None
+
+        def get_message(self, timeout: float):
+            self.message_calls += 1
+            return None
+
+        def unsubscribe(self, _channel: str):
+            return None
+
+        def close(self):
+            return None
+
+    fake_pubsub = _FakePubSub()
+    monkeypatch.setattr(api_main, "_get_live_meta_for_source", lambda _source_id: None)
+    monkeypatch.setattr(api_main, "_redis_client", lambda: SimpleNamespace(pubsub=lambda **_kwargs: fake_pubsub))
+    monkeypatch.setattr(api_main, "_SHUTDOWN_REQUESTED", True)
+
+    assert list(api_main._iter_mjpeg_stream("cam-1")) == []
+    assert fake_pubsub.message_calls == 0

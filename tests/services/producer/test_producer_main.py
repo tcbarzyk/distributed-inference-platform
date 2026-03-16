@@ -120,3 +120,25 @@ def test_validate_producer_config_rejects_missing_camera_dir(monkeypatch: pytest
     )
     with pytest.raises(ValueError, match="Camera directory does not exist"):
         producer_main.validate_producer_config()
+
+
+def test_run_source_frame_sequence_stops_when_shutdown_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(producer_main, "_maybe_log_interval_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(producer_main, "_log_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(producer_main, "_sleep_for_replay_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(producer_main.cv2, "imread", lambda *_args, **_kwargs: np.zeros((2, 2), dtype=np.uint8))
+    publish_calls = {"count": 0}
+
+    def _fake_publish(*_args, **_kwargs):
+        publish_calls["count"] += 1
+        return True, None
+
+    monkeypatch.setattr(producer_main, "_publish_frame", _fake_publish)
+    monkeypatch.setattr(producer_main, "_SHUTDOWN_REQUESTED", True)
+
+    frames = [producer_main.PublishRecord(frame_id=0, source_id="cam-1", capture_ts_us=10, path="a")]
+    result = producer_main._run_source_frame_sequence(SimpleNamespace(), "cam-1", frames)
+
+    assert result.attempted_frames == 0
+    assert result.published_frames == 0
+    assert publish_calls["count"] == 0

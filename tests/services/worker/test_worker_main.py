@@ -168,3 +168,52 @@ def test_advance_redis_brpop_backoff_s_doubles_and_caps() -> None:
 
 def test_advance_redis_brpop_backoff_s_resets_on_success() -> None:
     assert worker_main._advance_redis_brpop_backoff_s(30.0, had_error=False) == pytest.approx(1.0)
+
+
+def test_run_worker_exits_loop_when_shutdown_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeRedis:
+        def __init__(self):
+            self.brpop_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def brpop(self, *_args, **_kwargs):
+            self.brpop_calls += 1
+            return None
+
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr(worker_main.redis, "Redis", lambda **_kwargs: fake_redis)
+    monkeypatch.setattr(worker_main, "_start_metrics_server", lambda: None)
+    monkeypatch.setattr(worker_main, "load_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(worker_main, "get_model_device", lambda: "cpu")
+    monkeypatch.setattr(worker_main, "_maybe_log_interval_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_main, "_log_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_main, "_register_signal_handlers", lambda: setattr(worker_main, "_SHUTDOWN_REQUESTED", True))
+    monkeypatch.setattr(
+        worker_main,
+        "CONFIG",
+        SimpleNamespace(
+            redis_host="localhost",
+            redis_port=6379,
+            redis_db=0,
+            redis_password=None,
+            queue_name="jobs",
+            worker_model_device="cpu",
+            worker_live_frames_enabled=False,
+            worker_live_frames_every_n=1,
+            worker_live_frame_ttl_seconds=1,
+            worker_live_frames_jpeg_quality=80,
+            worker_live_frame_key_prefix="live.frame",
+            worker_live_meta_key_prefix="live.meta",
+            worker_mjpeg_publish_enabled=False,
+            worker_mjpeg_max_fps=1,
+            worker_mjpeg_channel_prefix="live.frames",
+        ),
+    )
+
+    worker_main.run_worker()
+    assert fake_redis.brpop_calls == 0

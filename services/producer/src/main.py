@@ -13,6 +13,7 @@ Flow:
 """
 
 from pathlib import Path
+import signal
 import sys
 
 # Support both direct-script and module execution.
@@ -45,6 +46,26 @@ from platform_shared.observability.metrics import (
 CONFIG = load_service_config(caller_file=__file__)
 init_json_logging(service_name="producer", log_level=CONFIG.log_level)
 logger = get_logger("Producer")
+_SHUTDOWN_REQUESTED = False
+
+
+def _request_shutdown(signum: int, _stack_frame) -> None:
+    """Signal handler: request a graceful stop at the next loop checkpoint."""
+    del _stack_frame
+    global _SHUTDOWN_REQUESTED
+    if _SHUTDOWN_REQUESTED:
+        return
+    _SHUTDOWN_REQUESTED = True
+    logger.info(
+        "Shutdown signal received (signal=%s). Finishing in-progress work...",
+        signum,
+        extra=_log_extra("producer.shutdown.requested", signal=signum),
+    )
+
+
+def _register_signal_handlers() -> None:
+    """Register service-level POSIX signal handlers."""
+    signal.signal(signal.SIGTERM, _request_shutdown)
 
 def _log_extra(event: str, **fields: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"event": event}
@@ -319,6 +340,8 @@ def _run_source_frame_sequence(r: redis.Redis, source_id: str, frames) -> Produc
     metrics.discovered_frames = len(frames)
 
     for idx, record in enumerate(frames):
+        if _SHUTDOWN_REQUESTED:
+            break
         loop_started_s = time.perf_counter()
         _maybe_log_interval_summary(metrics, "sample_files_parallel_source", source_id=source_id)
         metrics.attempted_frames += 1
@@ -442,6 +465,8 @@ def _run_sample_file_mode(r: redis.Redis) -> None:
     )
 
     for idx, record in enumerate(frames):
+        if _SHUTDOWN_REQUESTED:
+            break
         loop_started_s = time.perf_counter()
         _maybe_log_interval_summary(metrics, "sample_files")
         metrics.attempted_frames += 1
@@ -519,7 +544,7 @@ def _run_livestream_mode(r: redis.Redis) -> None:
 
     frame_id = 0
     try:
-        while True:
+        while not _SHUTDOWN_REQUESTED:
             loop_started_s = time.perf_counter()
             _maybe_log_interval_summary(metrics, "livestream")
             # Pull the next frame from the stream.
@@ -671,6 +696,9 @@ def run_producer():
     - sample_files: reads indexed files from disk and replays them.
     - livestream: reads frames continuously from a live source.
     """
+    global _SHUTDOWN_REQUESTED
+    _SHUTDOWN_REQUESTED = False
+    _register_signal_handlers()
     _start_metrics_server()
     validate_producer_config()
 
