@@ -4,6 +4,12 @@ services:
     container_name: dip-redis
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   postgres:
@@ -13,6 +19,12 @@ services:
       - "5432:5432"
     volumes:
       - ./services/postgres/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   api:
@@ -24,10 +36,18 @@ services:
       REDIS_HOST: redis
       POSTGRES_HOST: postgres
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).getcode() == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   producer:
@@ -39,11 +59,18 @@ services:
       REDIS_HOST: redis
       PRODUCER_METRICS_PORT: ${PRODUCER_METRICS_PORT:-9101}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./services/producer/sample-video:/app/services/producer/sample-video:ro
     ports:
       - "9101:9101"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, urllib.request; port=os.getenv('PRODUCER_METRICS_PORT','9101'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics', timeout=2).getcode() == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   worker:
@@ -56,11 +83,19 @@ services:
       POSTGRES_HOST: postgres
       WORKER_METRICS_PORT: ${WORKER_METRICS_PORT:-9102}
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     volumes:
       - ./services/worker/output:/app/services/worker/output
       - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, urllib.request; port=os.getenv('WORKER_METRICS_PORT','9102'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics', timeout=2).getcode() == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     gpus: all
 
@@ -68,15 +103,22 @@ services:
     image: prom/prometheus:v2.54.1
     user: root
     depends_on:
-      - api
-      - producer
-      - worker
+      api:
+        condition: service_healthy
+      producer:
+        condition: service_healthy
     ports:
       - "9090:9090"
     volumes:
       - ./services/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - prometheus_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

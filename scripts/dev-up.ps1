@@ -1,5 +1,7 @@
 param(
-  [switch]$Rebuild
+  [switch]$Rebuild,
+  [ValidateRange(1, 32)]
+  [int]$WorkerDevScale = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,5 +21,5 @@ if ($Rebuild) {
   docker compose --profile dev build worker-dev
 }
 
-docker compose --profile dev up -d --scale worker-dev=3 `
+docker compose --profile dev up -d --scale worker-dev=$WorkerDevScale `
   redis postgres api producer prometheus worker-dev

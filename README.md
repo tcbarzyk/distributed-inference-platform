@@ -103,6 +103,68 @@ Strict MJPEG mode (also requires stream endpoint to emit bytes within timeout):
 python scripts/smoke_api.py --require-live-frame --require-mjpeg-stream
 ```
 
+## Benchmark Suite
+
+A new benchmark suite scaffold lives in `benchmarks/`.
+
+This is the long-term replacement for one-off audit scripts when you want
+repeatable performance comparisons across changes.
+
+Phase 1 currently includes:
+
+- a top-level CLI entry point
+- a canonical benchmark result schema
+- schema documentation
+- executable `baseline`, `worker-step`, and `api-step` profiles
+- a `compare` command for before/after deltas
+
+Run the CLI:
+
+```bash
+python -m benchmarks --help
+```
+
+Create a benchmark manifest:
+
+```bash
+python -m benchmarks plan --profile baseline --label current-baseline
+```
+
+Run a baseline benchmark:
+
+```bash
+python -m benchmarks baseline --label current-baseline
+```
+
+Run a paced worker sweep:
+
+```bash
+python -m benchmarks worker-step --threads 2 --fps-steps 10,20,30,40 --step-duration 60 --stop-on-saturation
+```
+
+Run a paced API sweep:
+
+```bash
+python -m benchmarks api-step --concurrency-steps 1,2,4,8,12,16 --step-duration 60 --stop-on-saturation
+```
+
+Validate a benchmark result:
+
+```bash
+python -m benchmarks validate audits/benchmarks/<run>.json
+```
+
+Compare two benchmark results:
+
+```bash
+python -m benchmarks compare old.json new.json
+```
+
+Read the benchmark docs:
+
+- `benchmarks/README.md`
+- `benchmarks/SCHEMA.md`
+
 ## Faster Worker Dev Loop (No Rebuild for Code-Only Changes)
 
 A `worker-dev` service is defined in `docker-compose.override.yml` under profile `dev`.

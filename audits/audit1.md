@@ -96,6 +96,8 @@ When `r.brpop()` raises a `RedisError`, the worker logs the error and immediatel
 
 **Fix:** Add exponential backoff with jitter (e.g. start at 1s, cap at 30s, reset on success).
 
+### FIXED
+
 ---
 
 ### B5. MJPEG publish gated by live-frame plan
@@ -117,6 +119,8 @@ The MJPEG Pub/Sub publish is nested **inside** the live-frame write function and
 Docker sends `SIGTERM` on `docker compose down`. All three services only catch `KeyboardInterrupt` (SIGINT). On SIGTERM, the process is killed after the grace period without flushing metrics, closing DB sessions cleanly, or finishing in-progress frames.
 
 **Fix:** Register a `signal.signal(signal.SIGTERM, ...)` handler that sets a shutdown flag checked by the main loop.
+
+### FIXED
 
 ---
 
@@ -217,6 +221,8 @@ Every Redis read in the API creates a new TCP connection. Under concurrent reque
 
 **Recommendation:** Instantiate one `redis.ConnectionPool` at module level. Pass it to all `redis.Redis()` constructors. For the async path (MJPEG), use `redis.asyncio.ConnectionPool`.
 
+### FIXED
+
 ---
 
 ### S7. One Pub/Sub subscription per MJPEG viewer
@@ -292,6 +298,8 @@ worker:
       condition: service_healthy
 ```
 
+### FIXED
+
 ---
 
 ### R5. No structured logging
@@ -299,6 +307,8 @@ worker:
 All services use plain-text `logging.basicConfig()` format. This makes log aggregation, parsing, and alerting difficult in any production-like environment.
 
 **Recommendation:** Switch to JSON-structured logging (e.g., `python-json-logger`). Include service name, trace IDs, and key dimensions in every log line.
+
+### FIXED
 
 ---
 
@@ -329,10 +339,10 @@ All services use plain-text `logging.basicConfig()` format. This makes log aggre
 
 | Feature | Priority | Notes |
 |---|---|---|
-| Prometheus/OpenTelemetry metrics export | High | Only internal log-based metrics exist |
+| Prometheus/OpenTelemetry metrics export | Medium | Prometheus `/metrics` endpoints are now present; OpenTelemetry/tracing and richer dashboards remain open |
 | CI/CD pipeline (tests, lint, build, deploy) | High | No automated testing at all |
-| Unit and integration tests | High | Zero test coverage |
-| Docker Compose healthchecks | Medium | See R4 |
+| Unit and integration tests | Medium | Basic unit/service tests now exist, but coverage is still limited and there is no CI enforcement |
+| Docker Compose healthchecks | Low | Implemented in `docker-compose.yml` and `docker-compose.override.yml`; future tuning may still refine readiness coverage |
 | Reverse proxy / API gateway (nginx, Traefik) | Medium | API exposed directly |
 | Secrets management | Medium | Plain `.env` file with passwords |
 | Centralized logging (Loki/ELK) | Medium | Logs only in container stdout |
@@ -355,25 +365,25 @@ All services use plain-text `logging.basicConfig()` format. This makes log aggre
 
 Focus: fix bugs, improve reliability of the existing pipeline.
 
-- [ ] **B1.** Add `POSTGRES_HOST: postgres` to worker service in `docker-compose.yml`.
-- [ ] **B2.** Create a shared Redis connection pool in the API service.
-- [ ] **B4.** Add exponential backoff with jitter on Redis errors in the worker loop.
+- [x] **B1.** Add `POSTGRES_HOST: postgres` to worker service in `docker-compose.yml`.
+- [x] **B2.** Create a shared Redis connection pool in the API service.
+- [x] **B4.** Add exponential backoff with jitter on Redis errors in the worker loop.
 - [x] **B5.** Decouple MJPEG publish from live-frame write path in worker.
-- [ ] **B6.** Add SIGTERM signal handler in producer, worker, and API.
+- [x] **B6.** Add SIGTERM signal handler in producer, worker, and API.
 - [ ] **B8.** Add reconnection loop for livestream producer mode.
-- [ ] **R4.** Add Docker Compose healthchecks for Redis, Postgres, and application services.
+- [x] **R4.** Add Docker Compose healthchecks for Redis, Postgres, and application services.
 - [ ] **R6.** Split `ServiceConfig` into per-service config classes.
 
 ### Phase 2: Observability & Testing (Week 3–4)
 
 Focus: make the system inspectable and add a safety net for further changes.
 
-- [ ] Add unit tests for shared schemas, config loading, and core functions.
-- [ ] Add integration tests for API endpoints (use `TestClient`).
-- [ ] Add integration tests for worker publish paths (mock Redis/DB).
-- [ ] **R5.** Switch to JSON-structured logging across all services.
-- [ ] Add Prometheus metrics endpoint to API (`/metrics`).
-- [ ] Instrument worker with Prometheus counters/histograms (inference latency, queue latency, throughput).
+- [x] Add unit tests for shared schemas, config loading, and core functions.
+- [x] Add integration tests for API endpoints (use `TestClient`).
+- [x] Add integration tests for worker publish paths (mock Redis/DB).
+- [x] **R5.** Switch to JSON-structured logging across all services.
+- [x] Add Prometheus metrics endpoint to API (`/metrics`).
+- [x] Instrument worker with Prometheus counters/histograms (inference latency, queue latency, throughput).
 - [ ] Add a simple CI pipeline (GitHub Actions: lint, type-check, test).
 
 ### Phase 3: Scalability Improvements (Week 5–7)
@@ -384,7 +394,7 @@ Focus: remove the biggest throughput ceilings.
 - [ ] **S3.** Add backpressure: producer monitors queue depth before publishing.
 - [ ] **S5.** Batch PostgreSQL writes in the worker (accumulate N results, flush in one transaction).
 - [ ] **S4 Phase 1.** Overlap I/O and inference in worker (prefetch next frame during inference).
-- [ ] **S6.** Use shared Redis connection pool in API.
+- [x] **S6.** Use shared Redis connection pool in API.
 - [ ] **B7.** Add `capture_ts_us` to results table via Alembic migration.
 - [ ] **R1.** Implement dead letter queue for failed jobs.
 - [ ] **R3.** Add idempotent result writes (`ON CONFLICT DO NOTHING`).
@@ -496,10 +506,10 @@ If camera positions are known, project detections onto a 2D map (Leaflet/Mapbox)
 
 The current system is a well-structured foundation with clean service boundaries and good configuration hygiene. The main areas requiring attention are:
 
-1. **Immediate bugs:** Worker missing Postgres host, API Redis connection leaks, MJPEG coupling issue.
-2. **Reliability:** No retries, no dead letter queue, no graceful shutdown, no healthchecks.
-3. **Scalability:** Single queue, full frames in Redis, no backpressure, single-threaded inference.
-4. **Observability:** No metrics export, no structured logging, no test coverage.
+1. **Immediate bugs:** Several early correctness issues are already fixed, including worker Postgres host wiring, API Redis pooling, worker BRPOP backoff, MJPEG coupling, and SIGTERM handling. Major remaining correctness gaps include async MJPEG streaming, persisted `capture_ts_us`, and producer livestream reconnection.
+2. **Reliability:** Dead-letter handling, idempotent result writes, TTL-race mitigation, and Docker healthchecks remain open.
+3. **Scalability:** Single queue, full frames in Redis, no backpressure, and single-threaded inference remain the dominant throughput ceilings.
+4. **Observability:** Prometheus metrics endpoints, JSON logging, and a basic test suite are now in place, but CI/CD, broader coverage, tracing, and dashboards remain open.
 5. **Missing features:** No frontend, no WebSocket, no auth, no CI/CD.
 
 The phased roadmap above addresses these systematically, starting with correctness fixes and building toward a production-capable distributed inference platform. The creative feature ideas provide stretch goals that make this an excellent vehicle for learning distributed systems, ML deployment, and real-time data processing.

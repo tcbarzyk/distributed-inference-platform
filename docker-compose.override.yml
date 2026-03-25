@@ -9,14 +9,22 @@ services:
       POSTGRES_HOST: postgres
       WORKER_METRICS_PORT: ${WORKER_DEV_METRICS_PORT:-9103}
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     volumes:
       - ./services/worker/src:/app/services/worker/src
       - ./libs/platform_shared/src:/app/libs/platform_shared/src
       - ./services/worker/output:/app/services/worker/output
       - ./services/worker/.cache/ultralytics:/root/.cache/ultralytics
     command: ["python", "services/worker/src/main.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys, urllib.request; port=os.getenv('WORKER_METRICS_PORT','9103'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/metrics', timeout=2).getcode() == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
     gpus: all
     profiles:

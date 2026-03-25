@@ -141,6 +141,7 @@ class WorkerMetrics:
     start_time_s: float = 0.0
     end_time_s: float = 0.0
     last_summary_log_s: float = 0.0
+    last_summary_processed_ok: int = 0
 
 
 def _fmt_latency(value):
@@ -180,7 +181,10 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         return
 
     elapsed = max(0.0, now - metrics.start_time_s)
-    throughput = (metrics.processed_ok / elapsed) if elapsed > 0 else 0.0
+    interval_elapsed = max(0.0, now - metrics.last_summary_log_s)
+    lifetime_throughput = (metrics.processed_ok / elapsed) if elapsed > 0 else 0.0
+    interval_processed_ok = metrics.processed_ok - metrics.last_summary_processed_ok
+    interval_throughput = (interval_processed_ok / interval_elapsed) if interval_elapsed > 0 else 0.0
     avg_queue_ms = _avg(metrics.queue_latency_total_ms, metrics.queue_latency_samples)
     logger.info(
         (
@@ -188,7 +192,8 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
             "blob_misses=%d decode_failures=%d inference_failures=%d publish_failures=%d redis_errors=%d "
             "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
             "mjpeg_attempted=%d mjpeg_sent=%d mjpeg_skipped_rate_limit=%d mjpeg_errors=%d "
-            "avg_queue_ms=%.2f throughput_fps=%.2f"
+            "avg_queue_ms=%.2f interval_processed=%d interval_elapsed_s=%.1f "
+            "interval_throughput_fps=%.2f lifetime_throughput_fps=%.2f"
         ),
         elapsed,
         metrics.jobs_popped,
@@ -209,16 +214,20 @@ def _maybe_log_interval_summary(metrics: WorkerMetrics, *, force: bool = False) 
         metrics.mjpeg_publish_skipped_rate_limit,
         metrics.mjpeg_publish_errors,
         avg_queue_ms,
-        throughput,
+        interval_processed_ok,
+        interval_elapsed,
+        interval_throughput,
+        lifetime_throughput,
         extra=_log_extra("worker.summary.interval"),
     )
     metrics.last_summary_log_s = now
+    metrics.last_summary_processed_ok = metrics.processed_ok
 
 
 def _log_summary(metrics: WorkerMetrics) -> None:
     """Emit end-of-run summary with throughput and error counters."""
     elapsed = max(0.0, metrics.end_time_s - metrics.start_time_s)
-    throughput = (metrics.processed_ok / elapsed) if elapsed > 0 else 0.0
+    average_throughput = (metrics.processed_ok / elapsed) if elapsed > 0 else 0.0
     avg_queue_ms = _avg(metrics.queue_latency_total_ms, metrics.queue_latency_samples)
     logger.info(
         (
@@ -227,7 +236,7 @@ def _log_summary(metrics: WorkerMetrics) -> None:
             "inference_failures=%d publish_failures=%d redis_errors=%d deleted_blobs=%d avg_queue_ms=%.2f "
             "live_plans=%d live_written=%d live_skipped=%d live_encode_failures=%d live_write_failures=%d "
             "mjpeg_attempted=%d mjpeg_sent=%d mjpeg_skipped_rate_limit=%d mjpeg_errors=%d "
-            "throughput_fps=%.2f"
+            "average_throughput_fps=%.2f"
         ),
         elapsed,
         metrics.jobs_popped,
@@ -251,7 +260,7 @@ def _log_summary(metrics: WorkerMetrics) -> None:
         metrics.mjpeg_publish_sent,
         metrics.mjpeg_publish_skipped_rate_limit,
         metrics.mjpeg_publish_errors,
-        throughput,
+        average_throughput,
         extra=_log_extra("worker.summary.final"),
     )
 

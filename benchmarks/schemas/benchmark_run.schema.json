@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dip.local/schemas/benchmark_run.schema.json",
+  "title": "BenchmarkRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "profile",
+    "status",
+    "started_at_utc",
+    "git",
+    "environment",
+    "inputs",
+    "thresholds",
+    "summary",
+    "measurements",
+    "verdicts",
+    "errors",
+    "notes",
+    "artifacts",
+    "comparisons"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "type": "string",
+      "enum": [
+        "baseline",
+        "worker-step",
+        "api-step",
+        "soak",
+        "stress-destructive"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "running",
+        "completed",
+        "failed",
+        "aborted"
+      ]
+    },
+    "started_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at_utc": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "commit",
+        "branch",
+        "dirty"
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "python_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hostname",
+        "platform",
+        "python_version",
+        "cwd"
+      ]
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_failure_rate": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_queue_depth_growth": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_latency_p95_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_latency_p99_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "max_failure_rate",
+        "max_queue_depth_growth",
+        "max_latency_p95_ms",
+        "max_latency_p99_ms"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "duration_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "stable",
+            "degrading",
+            "saturated",
+            "invalid"
+          ]
+        },
+        "success": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "headline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary_metrics": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "duration_s",
+        "classification",
+        "success",
+        "headline",
+        "primary_metrics"
+      ]
+    },
+    "measurements": {
+      "type": "object"
+    },
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "raw_outputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "related_audits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "raw_outputs",
+        "related_audits",
+        "notes_path"
+      ]
+    },
+    "comparisons": {
+      "type": "object"
+    }
+  }
+}
