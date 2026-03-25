@@ -44,6 +44,7 @@ class MetricNames:
     WORKER_QUEUE_LATENCY_MS = "worker_queue_latency_ms"
     WORKER_INFERENCE_DURATION_MS = "worker_inference_duration_ms"
     WORKER_PIPELINE_DURATION_MS = "worker_pipeline_duration_ms"
+    WORKER_STAGE_DURATION_MS = "worker_stage_duration_ms"
     WORKER_QUEUE_DEPTH = "worker_queue_depth"
 
     API_REQUESTS_TOTAL = "api_requests_total"

@@ -1,0 +1,655 @@
+{
+  "schema_version": 1,
+  "run_id": "bench_e91aacd3a3da",
+  "profile": "worker-step",
+  "status": "completed",
+  "started_at_utc": "2026-03-25T07:30:44.243999+00:00",
+  "finished_at_utc": "2026-03-25T07:34:49.375902+00:00",
+  "label": "worker-sweep-mid",
+  "git": {
+    "commit": "a987eeee33ed5ee1b21f414effb1bb5dd7edad90",
+    "branch": "main",
+    "dirty": true
+  },
+  "environment": {
+    "hostname": "ok-computer",
+    "platform": "Windows-10-10.0.22631-SP0",
+    "python_version": "3.11.4",
+    "cwd": "C:\\Users\\tcbar\\Desktop\\ds\\platform"
+  },
+  "inputs": {
+    "prom_url": "http://localhost:9090",
+    "timeout_s": 5.0,
+    "redis_host": "localhost",
+    "redis_port": 6380,
+    "queue_name": "video_stream",
+    "frame_key_prefix": "frame",
+    "frame_ttl": 15,
+    "threads": 2,
+    "fps_steps": [
+      10.0,
+      15.0,
+      20.0,
+      25.0
+    ],
+    "step_duration_s": 60.0,
+    "stop_on_saturation": true
+  },
+  "thresholds": {
+    "max_failure_rate": 0.01,
+    "max_queue_depth_growth": 0.0,
+    "max_latency_p95_ms": 75.0,
+    "max_latency_p99_ms": 150.0
+  },
+  "summary": {
+    "duration_s": 244.23500000080094,
+    "classification": "saturated",
+    "success": false,
+    "headline": "Worker step benchmark completed across 4 step(s); highest stable tested input fps=40.00; first saturated tested input fps=50.00",
+    "primary_metrics": {
+      "best_stable_total_input_fps": 40.0,
+      "highest_stable_tested_input_fps": 40.0,
+      "first_saturated_tested_input_fps": 50.0,
+      "tested_threads": 2,
+      "final_queue_growth": 261.0,
+      "final_observed_failure_rate": 0.0,
+      "final_worker_processed_rate": 44.9305404029384
+    }
+  },
+  "measurements": {
+    "steps": [
+      {
+        "source_id": "bench_20260325_073044",
+        "num_threads": 2,
+        "target_fps_per_thread": 10.0,
+        "target_fps_total": 20.0,
+        "duration_s": 61.188000000081956,
+        "enqueued_total": 1220,
+        "enqueue_fps_avg": 19.938550042465288,
+        "redis_errors": 0,
+        "prom_before": {
+          "worker_processed_rate": 10.012040266526652,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 38.85593220338981,
+          "worker_pipeline_p95_ms": 40.55970149253732,
+          "api_request_rate": 0.13624064232241845,
+          "api_duration_p95_ms": 3.9758376288659796
+        },
+        "prom_after": {
+          "worker_processed_rate": 19.929084462223837,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 35.95744680851062,
+          "worker_pipeline_p95_ms": 36.66666666666663,
+          "api_request_rate": 0.20001818347122463,
+          "api_duration_p95_ms": 4.266666666666666
+        },
+        "queue_depth_growth": 0.0,
+        "observed_failure_rate": 0.0,
+        "classification": "stable",
+        "verdicts": [
+          "within_thresholds"
+        ],
+        "interval_samples": [
+          {
+            "elapsed_s": 5.0,
+            "enqueued_total": 102,
+            "enqueue_fps": 20.4,
+            "worker_processed_rate": 10.511065880753186,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 10.1,
+            "enqueued_total": 204,
+            "enqueue_fps": 20.21002575779392,
+            "worker_processed_rate": 12.258515614582498,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 15.2,
+            "enqueued_total": 306,
+            "enqueue_fps": 20.16873187416892,
+            "worker_processed_rate": 13.72827114699251,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 20.3,
+            "enqueued_total": 408,
+            "enqueue_fps": 20.132241191852124,
+            "worker_processed_rate": 12.963872070401282,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 25.4,
+            "enqueued_total": 508,
+            "enqueue_fps": 20.019704433497537,
+            "worker_processed_rate": 11.855838818780231,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 30.5,
+            "enqueued_total": 610,
+            "enqueue_fps": 20.020348550959323,
+            "worker_processed_rate": 10.3100281843804,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 35.6,
+            "enqueued_total": 712,
+            "enqueue_fps": 20.02080814324886,
+            "worker_processed_rate": 11.455586871533777,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 40.6,
+            "enqueued_total": 814,
+            "enqueue_fps": 20.029034718488855,
+            "worker_processed_rate": 13.27417536458523,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 45.8,
+            "enqueued_total": 914,
+            "enqueue_fps": 19.971157627804978,
+            "worker_processed_rate": 15.074371749645417,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 50.8,
+            "enqueued_total": 1016,
+            "enqueue_fps": 19.982692156383862,
+            "worker_processed_rate": 16.87395446941596,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 55.9,
+            "enqueued_total": 1118,
+            "enqueue_fps": 19.98641352923526,
+            "worker_processed_rate": 18.69294832163509,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 61.1,
+            "enqueued_total": 1220,
+            "enqueue_fps": 19.979365573233586,
+            "worker_processed_rate": 19.92908446222384,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          }
+        ]
+      },
+      {
+        "source_id": "bench_20260325_073145",
+        "num_threads": 2,
+        "target_fps_per_thread": 15.0,
+        "target_fps_total": 30.0,
+        "duration_s": 61.015000000130385,
+        "enqueued_total": 1822,
+        "enqueue_fps_avg": 29.86150946482187,
+        "redis_errors": 0,
+        "prom_before": {
+          "worker_processed_rate": 19.92908446222384,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 35.95744680851062,
+          "worker_pipeline_p95_ms": 36.66666666666663,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.266666666666666
+        },
+        "prom_after": {
+          "worker_processed_rate": 29.857259750886442,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 24.87380038387716,
+          "worker_pipeline_p95_ms": 24.941094545085626,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.449999999999999
+        },
+        "queue_depth_growth": 0.0,
+        "observed_failure_rate": 0.0,
+        "classification": "stable",
+        "verdicts": [
+          "within_thresholds"
+        ],
+        "interval_samples": [
+          {
+            "elapsed_s": 5.0,
+            "enqueued_total": 154,
+            "enqueue_fps": 30.8,
+            "worker_processed_rate": 19.910900990999185,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 10.1,
+            "enqueued_total": 304,
+            "enqueue_fps": 30.116901129261528,
+            "worker_processed_rate": 20.838258023456678,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 15.2,
+            "enqueued_total": 456,
+            "enqueue_fps": 30.087094220192196,
+            "worker_processed_rate": 21.692881171015546,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 20.3,
+            "enqueued_total": 608,
+            "enqueue_fps": 30.002467307973752,
+            "worker_processed_rate": 23.511228293481228,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 25.3,
+            "enqueued_total": 760,
+            "enqueue_fps": 29.987373737325253,
+            "worker_processed_rate": 24.402218383489412,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 30.4,
+            "enqueued_total": 912,
+            "enqueue_fps": 29.978305173637693,
+            "worker_processed_rate": 25.31093170412394,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 35.5,
+            "enqueued_total": 1064,
+            "enqueue_fps": 29.9591721806587,
+            "worker_processed_rate": 26.23827187431813,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 40.6,
+            "enqueued_total": 1216,
+            "enqueue_fps": 29.96697717959576,
+            "worker_processed_rate": 27.129245763328246,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 45.7,
+            "enqueued_total": 1368,
+            "enqueue_fps": 29.963203083958906,
+            "worker_processed_rate": 28.037383177570096,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 50.8,
+            "enqueued_total": 1518,
+            "enqueue_fps": 29.90249187424606,
+            "worker_processed_rate": 28.93042877404808,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 55.8,
+            "enqueued_total": 1670,
+            "enqueue_fps": 29.91330515142309,
+            "worker_processed_rate": 29.857802669382117,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 60.9,
+            "enqueued_total": 1822,
+            "enqueue_fps": 29.907094317199434,
+            "worker_processed_rate": 29.85725975088645,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          }
+        ]
+      },
+      {
+        "source_id": "bench_20260325_073247",
+        "num_threads": 2,
+        "target_fps_per_thread": 20.0,
+        "target_fps_total": 40.0,
+        "duration_s": 60.985000000335276,
+        "enqueued_total": 2424,
+        "enqueue_fps_avg": 39.74747888803269,
+        "redis_errors": 0,
+        "prom_before": {
+          "worker_processed_rate": 29.857259750886442,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 24.87380038387716,
+          "worker_pipeline_p95_ms": 24.941094486157624,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.449999999999999
+        },
+        "prom_after": {
+          "worker_processed_rate": 39.76725156832439,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 24.689383070301293,
+          "worker_pipeline_p95_ms": 24.707368918280586,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.266666666666666
+        },
+        "queue_depth_growth": 0.0,
+        "observed_failure_rate": 0.0,
+        "classification": "stable",
+        "verdicts": [
+          "within_thresholds"
+        ],
+        "interval_samples": [
+          {
+            "elapsed_s": 5.0,
+            "enqueued_total": 204,
+            "enqueue_fps": 40.66985645694397,
+            "worker_processed_rate": 30.511864714974088,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 10.1,
+            "enqueued_total": 406,
+            "enqueue_fps": 40.221914008158485,
+            "worker_processed_rate": 31.38467133375762,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 15.2,
+            "enqueued_total": 606,
+            "enqueue_fps": 39.94199841747179,
+            "worker_processed_rate": 32.2920833484854,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 20.2,
+            "enqueued_total": 810,
+            "enqueue_fps": 40.0,
+            "worker_processed_rate": 33.18483498499864,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 25.3,
+            "enqueued_total": 1012,
+            "enqueue_fps": 39.93055555549099,
+            "worker_processed_rate": 34.02127466133285,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 30.4,
+            "enqueued_total": 1214,
+            "enqueue_fps": 39.90533166753965,
+            "worker_processed_rate": 34.91162993672267,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 35.5,
+            "enqueued_total": 1416,
+            "enqueue_fps": 39.869354656725605,
+            "worker_processed_rate": 35.89417219747249,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 40.6,
+            "enqueued_total": 1616,
+            "enqueue_fps": 39.824535462357524,
+            "worker_processed_rate": 36.76631027711106,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 45.6,
+            "enqueued_total": 1818,
+            "enqueue_fps": 39.83260664727498,
+            "worker_processed_rate": 37.673412243858984,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 0.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 50.7,
+            "enqueued_total": 2020,
+            "enqueue_fps": 39.839851685137766,
+            "worker_processed_rate": 38.56644119572332,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 55.8,
+            "enqueued_total": 2222,
+            "enqueue_fps": 39.83363809105273,
+            "worker_processed_rate": 39.47703385823908,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 0.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 60.9,
+            "enqueued_total": 2424,
+            "enqueue_fps": 39.82911600372406,
+            "worker_processed_rate": 39.7672515683244,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 1.0,
+            "redis_errors": 0
+          }
+        ]
+      },
+      {
+        "source_id": "bench_20260325_073348",
+        "num_threads": 2,
+        "target_fps_per_thread": 25.0,
+        "target_fps_total": 50.0,
+        "duration_s": 61.04700000025332,
+        "enqueued_total": 3030,
+        "enqueue_fps_avg": 49.63388864297061,
+        "redis_errors": 0,
+        "prom_before": {
+          "worker_processed_rate": 39.7672515683244,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 1.0,
+          "worker_inference_p95_ms": 24.689383070301293,
+          "worker_pipeline_p95_ms": 24.707368918280586,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.266666666666666
+        },
+        "prom_after": {
+          "worker_processed_rate": 44.9305404029384,
+          "worker_failures_rate": 0.0,
+          "worker_queue_depth": 262.0,
+          "worker_inference_p95_ms": 24.653553299492387,
+          "worker_pipeline_p95_ms": 24.68348623853211,
+          "api_request_rate": 0.2000181834712247,
+          "api_duration_p95_ms": 4.449999999999999
+        },
+        "queue_depth_growth": 261.0,
+        "observed_failure_rate": 0.0,
+        "classification": "saturated",
+        "verdicts": [
+          "queue_growth_exceeded"
+        ],
+        "interval_samples": [
+          {
+            "elapsed_s": 5.0,
+            "enqueued_total": 254,
+            "enqueue_fps": 50.8,
+            "worker_processed_rate": 40.058915518056516,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 4.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 10.1,
+            "enqueued_total": 506,
+            "enqueue_fps": 50.1287893796261,
+            "worker_processed_rate": 40.71279207200655,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 17.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 15.2,
+            "enqueued_total": 760,
+            "enqueue_fps": 50.09227524303392,
+            "worker_processed_rate": 41.25679582522683,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 36.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 20.3,
+            "enqueued_total": 1012,
+            "enqueue_fps": 49.938317295508945,
+            "worker_processed_rate": 41.821983816710606,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 57.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 25.4,
+            "enqueued_total": 1264,
+            "enqueue_fps": 49.84423675978779,
+            "worker_processed_rate": 41.822744299378115,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 103.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 30.4,
+            "enqueued_total": 1518,
+            "enqueue_fps": 49.87350921589143,
+            "worker_processed_rate": 42.130336751763764,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 134.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 35.5,
+            "enqueued_total": 1772,
+            "enqueue_fps": 49.84949503438749,
+            "worker_processed_rate": 42.82285340218933,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 149.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 40.7,
+            "enqueued_total": 2024,
+            "enqueue_fps": 49.763965381279355,
+            "worker_processed_rate": 43.368367458268175,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 167.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 45.8,
+            "enqueued_total": 2274,
+            "enqueue_fps": 49.704918032786885,
+            "worker_processed_rate": 43.929668891030424,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 184.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 50.8,
+            "enqueued_total": 2526,
+            "enqueue_fps": 49.72734610286834,
+            "worker_processed_rate": 44.27594734162484,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 216.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 55.9,
+            "enqueued_total": 2776,
+            "enqueue_fps": 49.682326621923934,
+            "worker_processed_rate": 44.94954086735157,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 226.0,
+            "redis_errors": 0
+          },
+          {
+            "elapsed_s": 60.9,
+            "enqueued_total": 3030,
+            "enqueue_fps": 49.735727651544615,
+            "worker_processed_rate": 44.930540402938405,
+            "worker_failures_rate": 0.0,
+            "worker_queue_depth": 262.0,
+            "redis_errors": 0
+          }
+        ]
+      }
+    ],
+    "queue_name": "video_stream",
+    "frame_ttl_s": 15
+  },
+  "verdicts": [
+    "step_20.00fps=stable",
+    "step_30.00fps=stable",
+    "step_40.00fps=stable",
+    "step_50.00fps=saturated"
+  ],
+  "errors": [],
+  "notes": [],
+  "artifacts": {
+    "raw_outputs": [],
+    "related_audits": [],
+    "notes_path": null
+  },
+  "comparisons": {}
+}

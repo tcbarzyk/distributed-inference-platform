@@ -108,6 +108,9 @@ def test_publish_mjpeg_safe_skips_when_rate_limited(monkeypatch: pytest.MonkeyPa
         r=SimpleNamespace(publish=lambda *_args, **_kwargs: 0),
         inference_result=SimpleNamespace(source_id="cam-1", frame_id=1, detections=[]),
         image=np.zeros((2, 2), dtype=np.uint8),
+        detection_dicts=[],
+        publish_meta=None,
+        jpeg_cache={},
         metrics=metrics,
     )
     assert metrics.mjpeg_publish_attempted == 1
@@ -141,6 +144,9 @@ def test_publish_mjpeg_safe_publishes_bytes(monkeypatch: pytest.MonkeyPatch) -> 
         r=fake_redis,
         inference_result=SimpleNamespace(source_id="cam-1", frame_id=1, detections=[]),
         image=np.zeros((2, 2), dtype=np.uint8),
+        detection_dicts=[],
+        publish_meta=None,
+        jpeg_cache={},
         metrics=metrics,
     )
     assert metrics.mjpeg_publish_attempted == 1

@@ -165,6 +165,34 @@ Read the benchmark docs:
 - `benchmarks/README.md`
 - `benchmarks/SCHEMA.md`
 
+## Worker Optimization Log
+
+Use this section as the brief changelog for worker performance phases. Keep each
+entry short and link to the detailed benchmark/audit notes under
+`audits/benchmarks/worker/`.
+
+### Phase 1: Reduce Per-Frame Overhead And Decouple Durable Publishing
+
+- Detailed notes: [`audits/benchmarks/worker/worker_performance_improvement_20260325.md`](/C:/Users/tcbar/Desktop/ds/platform/audits/benchmarks/worker/worker_performance_improvement_20260325.md)
+- Baseline benchmark reference: [`audits/benchmarks/worker/v0/bench_94eb060b872f.json`](/C:/Users/tcbar/Desktop/ds/platform/audits/benchmarks/worker/v0/bench_94eb060b872f.json)
+- Latest benchmark reference from this phase: [`audits/benchmarks/worker/v1/bench_fc895e68df71.json`](/C:/Users/tcbar/Desktop/ds/platform/audits/benchmarks/worker/v1/bench_fc895e68df71.json)
+- Implemented:
+  - worker stage timing instrumentation
+  - periodic queue-depth sampling instead of per-frame `LLEN`
+  - gated debug log construction
+  - shared detection payload reuse
+  - shared JPEG reuse across live-frame and MJPEG paths
+  - reduced Postgres lookup/update overhead
+  - background thread for concurrent Postgres/JSONL result writes
+- Key design decisions:
+  - keep concurrency inside the existing worker process
+  - decouple durable result publishing before redesigning live streaming
+  - keep live-frame Redis writes and MJPEG Pub/Sub on the foreground path for now
+  - retain minimal `jobs` inserts because `results.job_id` still has a foreign key to `jobs.job_id`
+- Measured outcome:
+  - `final_worker_processed_rate` improved from `39.44066625450049` to `49.65996290504419`
+  - net gain: about `+10.22 fps`
+
 ## Faster Worker Dev Loop (No Rebuild for Code-Only Changes)
 
 A `worker-dev` service is defined in `docker-compose.override.yml` under profile `dev`.

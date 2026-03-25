@@ -79,6 +79,7 @@ def test_publish_result_rejects_unsupported_mode() -> None:
             config=SimpleNamespace(worker_results_mode="bad"),
             inference_result=_inference_result(),
             image=np.zeros((2, 2), dtype=np.uint8),
+            detection_dicts=[{"label": "person", "class_id": 0, "confidence": 0.9, "bbox_xyxy": [1, 2, 3, 4]}],
         )
 
 
@@ -100,6 +101,7 @@ def test_publish_to_json_writes_jsonl_record(monkeypatch: pytest.MonkeyPatch, tm
         config=config,
         inference_result=_inference_result(),
         image=np.zeros((5, 5), dtype=np.uint8),
+        detection_dicts=[{"label": "person", "class_id": 0, "confidence": 0.9, "bbox_xyxy": [1, 2, 3, 4]}],
     )
     assert out["annotated_path"] is None
     assert out["detections_count"] == 1

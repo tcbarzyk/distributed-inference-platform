@@ -1,7 +1,7 @@
 param(
   [switch]$Rebuild,
   [ValidateRange(1, 32)]
-  [int]$WorkerDevScale = 3
+  [int]$WorkerDevScale = 1
 )
 
 $ErrorActionPreference = "Stop"

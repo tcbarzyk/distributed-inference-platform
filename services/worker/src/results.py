@@ -10,10 +10,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import cv2
 import numpy as np
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from platform_shared.config import ServiceConfig
@@ -21,6 +23,8 @@ from platform_shared.models import JobModel, ResultModel, SourceModel
 from platform_shared.schemas import InferenceResult
 
 from db import SessionLocal
+
+_KNOWN_SOURCE_IDS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,34 @@ def _results_file_path(results_dir: Path) -> Path:
     day = datetime.now().strftime("%Y%m%d")
     return results_dir / f"results-{day}.jsonl"
 
+
+def _build_result_record(
+    inference_result: InferenceResult,
+    detection_dicts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build one reusable dict payload for JSONL and related publish paths."""
+    return {
+        "schema_version": inference_result.schema_version,
+        "job_id": inference_result.job_id,
+        "frame_id": inference_result.frame_id,
+        "source_id": inference_result.source_id,
+        "status": inference_result.status,
+        "model": inference_result.model,
+        "inference_ms": inference_result.inference_ms,
+        "pipeline_ms": inference_result.pipeline_ms,
+        "processed_at_us": inference_result.processed_at_us,
+        "detections": detection_dicts,
+    }
+
+
+def _elapsed_ms(started_at_s: float) -> float:
+    return (time.perf_counter() - started_at_s) * 1000.0
+
+
+def _empty_publish_stage_timings() -> dict[str, float]:
+    return {}
+
+
 def encode_live_frame_jpeg(*, image: np.ndarray, detections: list[dict[str, Any]], jpeg_quality: int) -> bytes | None:
     rendered = _draw_detections(image, detections)
     ok, encoded = cv2.imencode(".jpg", rendered, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
@@ -140,16 +172,30 @@ def publish_to_json(*,
     config: ServiceConfig,
     inference_result: InferenceResult,
     image: np.ndarray,
+    detection_dicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Persist one inference result to local JSONL (and optional annotated image)."""
+    timings = _empty_publish_stage_timings()
+
+    started_at_s = time.perf_counter()
     results_dir, annotated_dir = _ensure_dirs(config)
+    timings["publish_json_prepare_dirs_ms"] = _elapsed_ms(started_at_s)
+
+    started_at_s = time.perf_counter()
     results_file = _results_file_path(results_dir)
-    live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
+    record = _build_result_record(inference_result, detection_dicts)
+    timings["publish_json_build_record_ms"] = _elapsed_ms(started_at_s)
 
-    record = inference_result.to_dict()
+    live_frame_plan = None
+    if config.worker_live_frames_enabled:
+        started_at_s = time.perf_counter()
+        live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
+        timings["publish_build_live_frame_plan_ms"] = _elapsed_ms(started_at_s)
 
+    started_at_s = time.perf_counter()
     with results_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
+    timings["publish_json_write_result_ms"] = _elapsed_ms(started_at_s)
 
     annotated_path = None
     frame_id = inference_result.frame_id
@@ -160,23 +206,27 @@ def publish_to_json(*,
         and (frame_id % config.worker_annotated_every_n == 0)
     )
     if should_save_annotated:
+        started_at_s = time.perf_counter()
         rendered = _draw_detections(image, record["detections"])
         # Keep output path safe across OS/filesystems and source naming styles.
         safe_source = (source_id or "source").replace("/", "_")
         annotated_path = annotated_dir / f"{safe_source}-frame-{frame_id}.jpg"
         cv2.imwrite(str(annotated_path), rendered)
+        timings["publish_json_write_annotated_ms"] = _elapsed_ms(started_at_s)
 
     return {
         "results_file": str(results_file),
         "annotated_path": str(annotated_path) if annotated_path else None,
         "detections_count": len(record["detections"]),
-        "live_frame_plan": live_frame_plan.to_dict(),
+        "live_frame_plan": live_frame_plan.to_dict() if live_frame_plan is not None else None,
+        "publish_stage_timings_ms": timings,
     }
 
 def publish_to_postgres(*,
     config: ServiceConfig,
     inference_result: InferenceResult,
     image: np.ndarray,
+    detection_dicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Persist one inference result to PostgreSQL.
 
@@ -187,53 +237,52 @@ def publish_to_postgres(*,
     - commit or rollback atomically
     """
     del image   # image is not needed for DB mode
-    live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
+    timings = _empty_publish_stage_timings()
 
+    live_frame_plan = None
+    if config.worker_live_frames_enabled:
+        started_at_s = time.perf_counter()
+        live_frame_plan = build_live_frame_publish_plan(config=config, inference_result=inference_result)
+        timings["publish_build_live_frame_plan_ms"] = _elapsed_ms(started_at_s)
+
+    started_at_s = time.perf_counter()
     session: Session = SessionLocal()
+    source_id_to_cache: str | None = None
+    timings["publish_db_open_session_ms"] = _elapsed_ms(started_at_s)
     try:
-        # Source dimension row: create on first sight of a source_id.
-        # Future improvement: move source registration to API/control-plane so
-        # workers never infer metadata like `name/kind` at write time.
-        source = (
-            session.query(SourceModel)
-            .filter(SourceModel.source_id == inference_result.source_id)
-            .one_or_none()
-        )
-        if source is None:
-            source = SourceModel(
-                source_id=inference_result.source_id,
-                name=inference_result.source_id,
-                # Future improvement: populate from known source registry instead
-                # of placeholder fallback values.
-                kind="unknown",
+        started_at_s = time.perf_counter()
+        if inference_result.source_id not in _KNOWN_SOURCE_IDS:
+            session.execute(
+                insert(SourceModel)
+                .values(
+                    source_id=inference_result.source_id,
+                    name=inference_result.source_id,
+                    kind="unknown",
+                )
+                .on_conflict_do_nothing(index_elements=[SourceModel.source_id])
             )
-            session.add(source)
+            source_id_to_cache = inference_result.source_id
+        timings["publish_db_upsert_source_ms"] = _elapsed_ms(started_at_s)
 
-        # Job row is keyed by external job_id for cross-service traceability.
-        # Future improvement: track full state transitions (queued/processing/done/failed)
-        # and retry/attempt metadata in DB.
-        job = (
-            session.query(JobModel)
-            .filter(JobModel.job_id == inference_result.job_id)
-            .one_or_none()
-        )
-        if job is None:
-            job = JobModel(
+        started_at_s = time.perf_counter()
+        # `results.job_id` still has an FK to `jobs.job_id`, so we keep a minimal
+        # insert for referential integrity but avoid per-frame update work.
+        session.execute(
+            insert(JobModel)
+            .values(
                 job_id=inference_result.job_id,
                 source_id=inference_result.source_id,
                 frame_id=inference_result.frame_id,
                 status=inference_result.status,
             )
-            session.add(job)
-        else:
-            # Keep job row aligned with latest observed terminal result.
-            job.source_id = inference_result.source_id
-            job.frame_id = inference_result.frame_id
-            job.status = inference_result.status
+            .on_conflict_do_nothing(index_elements=[JobModel.job_id])
+        )
+        timings["publish_db_upsert_job_ms"] = _elapsed_ms(started_at_s)
 
         # Results are append-only rows (many results may reference one job_id).
         # Future improvement: add idempotency/uniqueness policy if retries can
         # produce duplicate logical results.
+        started_at_s = time.perf_counter()
         result_row = ResultModel(
             job_id=inference_result.job_id,
             source_id=inference_result.source_id,
@@ -244,15 +293,22 @@ def publish_to_postgres(*,
             inference_ms=inference_result.inference_ms,
             pipeline_ms=inference_result.pipeline_ms,
             processed_at_us=inference_result.processed_at_us,
-            detections_json=[det.to_dict() for det in inference_result.detections],
+            detections_json=detection_dicts,
         )
         session.add(result_row)
+        timings["publish_db_build_result_row_ms"] = _elapsed_ms(started_at_s)
+
+        started_at_s = time.perf_counter()
         session.commit()
+        timings["publish_db_commit_ms"] = _elapsed_ms(started_at_s)
+        if source_id_to_cache is not None:
+            _KNOWN_SOURCE_IDS.add(source_id_to_cache)
         return {
             "results_file": None,
             "annotated_path": None,
             "detections_count": len(result_row.detections_json),
-            "live_frame_plan": live_frame_plan.to_dict(),
+            "live_frame_plan": live_frame_plan.to_dict() if live_frame_plan is not None else None,
+            "publish_stage_timings_ms": timings,
         }
     except Exception:
         # Roll back partial work so source/job/result remain transactionally consistent.
@@ -267,6 +323,7 @@ def publish_result(
     config: ServiceConfig,
     inference_result: InferenceResult,
     image: np.ndarray,
+    detection_dicts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
     Publish worker output.
@@ -276,8 +333,18 @@ def publish_result(
     - postgres: save results to a PostgreSQL database.
     """
     if config.worker_results_mode == "local_jsonl":
-        return publish_to_json(config=config, inference_result=inference_result, image=image)
+        return publish_to_json(
+            config=config,
+            inference_result=inference_result,
+            image=image,
+            detection_dicts=detection_dicts,
+        )
     elif config.worker_results_mode == "postgres":
-        return publish_to_postgres(config=config, inference_result=inference_result, image=image)
+        return publish_to_postgres(
+            config=config,
+            inference_result=inference_result,
+            image=image,
+            detection_dicts=detection_dicts,
+        )
     else:
         raise ValueError(f"Unsupported WORKER_RESULTS_MODE: {config.worker_results_mode}")
